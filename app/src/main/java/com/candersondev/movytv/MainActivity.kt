@@ -100,7 +100,8 @@ class MainActivity : Activity() {
                             val destination = if (index == 0) movyMovies else movyShows
                             destination.clear()
                             destination.addAll(list.distinctBy { it.pageUrl })
-                            renderHome(activeSection)
+                            if (search.text.isNotBlank()) performSearch(search.text.toString())
+                            else renderHome(activeSection)
                         } catch (_: Exception) { }
                         index++
                         if (index < pages.size) view.loadUrl(pages[index])
@@ -326,10 +327,17 @@ class MainActivity : Activity() {
         }
     }
     private fun performSearch(term: String) {
-        if (term.isBlank()) { renderHome("all"); return }
-        renderMessage("Searching for “$term”…")
+        if (term.isBlank()) { requestGeneration++; renderHome("all"); return }
+        val generation = ++requestGeneration
+        val query = term.trim()
+        val movyFilm = movyMovies.filter { it.name.contains(query, ignoreCase = true) }
+        val movyTv = movyShows.filter { it.name.contains(query, ignoreCase = true) }
+        results.removeAllViews()
+        if (movyFilm.isNotEmpty()) addRail("Movies on Movy", movyFilm)
+        if (movyTv.isNotEmpty()) addRail("TV Shows on Movy", movyTv)
+        if (movyFilm.isEmpty() && movyTv.isEmpty()) renderMessage("Searching for “$query”…")
         worker.execute {
-            val encoded = URLEncoder.encode(term, "UTF-8")
+            val encoded = URLEncoder.encode(query, "UTF-8")
             val tv = try {
                 val arr = JSONArray(request("https://api.tvmaze.com/search/shows?q=$encoded"))
                 (0 until arr.length()).map { tvFromJson(arr.getJSONObject(it)) }
@@ -340,16 +348,27 @@ class MainActivity : Activity() {
                 (0 until arr.length()).map { movieFromJson(arr.getJSONObject(it)) }
             } catch (_: Exception) { emptyList() }
             runOnUiThread {
+                if (generation != requestGeneration) return@runOnUiThread
                 results.removeAllViews()
-                if (tv.isEmpty() && film.isEmpty()) renderMessage("No results. Check your internet connection or try another search.")
-                else {
-                    if (film.isNotEmpty()) addRail("Movie results", film)
-                    if (tv.isNotEmpty()) addRail("TV results", tv)
+                val currentMovyFilm = movyMovies.filter { it.name.contains(query, ignoreCase = true) }
+                val currentMovyTv = movyShows.filter { it.name.contains(query, ignoreCase = true) }
+                if (currentMovyFilm.isNotEmpty()) addRail("Movies on Movy", currentMovyFilm)
+                if (currentMovyTv.isNotEmpty()) addRail("TV Shows on Movy", currentMovyTv)
+                val otherFilm = film.filterNot { candidate ->
+                    currentMovyFilm.any { it.name.equals(candidate.name, ignoreCase = true) }
                 }
+                val otherTv = tv.filterNot { candidate ->
+                    currentMovyTv.any { it.name.equals(candidate.name, ignoreCase = true) }
+                }
+                if (otherFilm.isNotEmpty()) addRail("Other movie results (metadata only)", otherFilm)
+                if (otherTv.isNotEmpty()) addRail("Other TV results (metadata only)", otherTv)
+                if (currentMovyFilm.isEmpty() && currentMovyTv.isEmpty() && otherFilm.isEmpty() && otherTv.isEmpty())
+                    renderMessage("No results. Try another title or check your connection.")
             }
         }
     }
     private fun renderHome(filter: String) {
+        requestGeneration++
         activeSection = filter
         results.removeAllViews()
         if (filter == "favorites") {
