@@ -101,8 +101,8 @@ class MainActivity : Activity() {
                                 if (name.isBlank() || !link.startsWith("https://www.movy.sx/") && !link.startsWith("https://movy.sx/")) continue
                                 val path = android.net.Uri.parse(link).path.orEmpty()
                                 // Only catalog actual title pages, not season/episode deep links.
-                                val moviePage = Regex("""^/movie/\\d+/?$""").matches(path)
-                                val showPage = Regex("""^/(?:tv|show)/\\d+/?$""").matches(path)
+                                val moviePage = Regex("""^/movie/\d+/?$""").matches(path)
+                                val showPage = Regex("""^/(?:tv|show)/\d+/?$""").matches(path)
                                 if (!moviePage && !showPage) continue
                                 if (index == 0 && !moviePage) continue
                                 if (index == 1 && !showPage) continue
