@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -38,3 +38,18 @@ jobs:
           name: movy-tv-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Publish downloadable APK to GitHub Releases
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          cp "$APK" "CA-Movie-App.apk"
+          gh release create "tv-build-${GITHUB_RUN_NUMBER}" "CA-Movie-App.apk" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "CA Movie TV build ${GITHUB_RUN_NUMBER}" \
+            --notes "Android TV test build. This is a debug-signed APK; install only on your own devices." \
+            --latest
