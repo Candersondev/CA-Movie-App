@@ -2,6 +2,9 @@ package com.candersondev.movytv
 
 import android.app.Activity
 import android.graphics.Color
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.view.MotionEvent
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
@@ -21,6 +24,9 @@ class MainActivity : Activity() {
     private lateinit var loading: ProgressBar
     private var fullscreen: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+    private var cursorX = 0f
+    private var cursorY = 0f
+    private lateinit var cursor: View
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,7 +53,7 @@ class MainActivity : Activity() {
                 }
                 override fun onPageFinished(view: WebView, url: String) {
                     loading.visibility = View.GONE
-                    view.evaluateJavascript(focusScript("init"), null)
+                    cursor.visibility = View.VISIBLE
                 }
             }
             webChromeClient = object : WebChromeClient() {
@@ -58,6 +64,7 @@ class MainActivity : Activity() {
                     if (fullscreen != null) { callback.onCustomViewHidden(); return }
                     fullscreen = view
                     fullscreenCallback = callback
+                    cursor.visibility = View.GONE
                     browser.visibility = View.GONE
                     root.addView(view, FrameLayout.LayoutParams(-1, -1))
                     view.requestFocus()
@@ -66,6 +73,18 @@ class MainActivity : Activity() {
             }
         }
         root.addView(browser, FrameLayout.LayoutParams(-1, -1))
+        cursor = object : View(this) {
+            private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f * resources.displayMetrics.density }
+            private val center = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(229, 9, 20) }
+            override fun onDraw(canvas: Canvas) {
+                super.onDraw(canvas)
+                if (cursorX == 0f && cursorY == 0f) { cursorX = width / 2f; cursorY = height / 2f }
+                val radius = 11f * resources.displayMetrics.density
+                canvas.drawCircle(cursorX, cursorY, radius, center)
+                canvas.drawCircle(cursorX, cursorY, radius, ring)
+            }
+        }
+        root.addView(cursor, FrameLayout.LayoutParams(-1, -1))
         loading = ProgressBar(this).apply { isIndeterminate = true }
         root.addView(loading, FrameLayout.LayoutParams(64, 64, android.view.Gravity.CENTER))
         if (savedInstanceState != null) browser.restoreState(savedInstanceState)
@@ -80,109 +99,40 @@ class MainActivity : Activity() {
         fullscreenCallback = null
         callback?.onCustomViewHidden()
         browser.visibility = View.VISIBLE
+        cursor.visibility = View.VISIBLE
         browser.requestFocus()
     }
 
-    private fun focusScript(direction: String): String {
-        // Movy uses custom clickable cards and player buttons, not just native HTML buttons.
-        return """
-        (function() {
-          var playing=Array.from(document.querySelectorAll('video')).some(function(v){return !v.paused && !v.ended;});
-          if(document.fullscreenElement || playing) {
-            document.getElementById('ca-tv-outline')?.remove();
-            return;
-          }
-          var old=document.getElementById('ca-tv-outline');
-          if(old)old.remove();
-          var selector='a[href],button,input,select,textarea,[role="button"],[role="link"],[role="option"],[role="menuitem"],[tabindex],[onclick],[data-testid],[data-state]';
-          var all=Array.from(document.querySelectorAll(selector));
-          // Also detect clickable divs, spans, images and SVG controls using cursor:pointer.
-          Array.from(document.querySelectorAll('div,span,img,svg')).forEach(function(e){
-            if(getComputedStyle(e).cursor==='pointer')all.push(e);
-          });
-          var elements=Array.from(new Set(all)).filter(function(e){
-            var r=e.getBoundingClientRect(),s=getComputedStyle(e);
-            if(r.width<8||r.height<8||s.visibility==='hidden'||s.display==='none'||s.pointerEvents==='none'||e.disabled)return false;
-            if(e.getAttribute('tabindex')==='-1')return false;
-            if(r.width>innerWidth*.95&&r.height>innerHeight*.65)return false;
-            return true;
-          });
-          // Keep nested Play / See more buttons navigable even inside a clickable result card.
-          elements=elements.filter(function(e){
-            var r=e.getBoundingClientRect();
-            return !elements.some(function(child){
-              if(child===e||!e.contains(child))return false;
-              var cr=child.getBoundingClientRect();
-              return Math.abs(cr.left-r.left)<3&&Math.abs(cr.top-r.top)<3&&
-                     Math.abs(cr.width-r.width)<3&&Math.abs(cr.height-r.height)<3&&
-                     (child.tagName==='BUTTON'||child.tagName==='A');
-            });
-          });
-          if(!elements.length)return;
-          var current=window.__caTvElement;
-          if(!current||!elements.includes(current))current=document.activeElement;
-          if(!elements.includes(current))current=elements[0];
-          if('$direction'==='click') {
-            current.focus();
-            if(current.matches('input,textarea,select')){current.click();return;}
-            var r=current.getBoundingClientRect();
-            var x=Math.max(0,Math.min(innerWidth-1,r.left+r.width/2));
-            var y=Math.max(0,Math.min(innerHeight-1,r.top+r.height/2));
-            var hit=document.elementFromPoint(x,y);
-            var target=hit&&current.contains(hit)?hit:current;
-            var clickable=target.closest('button,a[href],[role="button"],[role="link"],[onclick]');
-            if(clickable&&current.contains(clickable))target=clickable;
-            target.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:1,pointerType:'mouse',clientX:x,clientY:y}));
-            target.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,clientX:x,clientY:y}));
-            target.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:1,pointerType:'mouse',clientX:x,clientY:y}));
-            target.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,clientX:x,clientY:y}));
-            target.click();
-            return;
-          }
-          if('$direction'!=='init'){
-            var a=current.getBoundingClientRect(),ax=a.left+a.width/2,ay=a.top+a.height/2;
-            var best=null,score=Infinity;
-            elements.forEach(function(e){
-              if(e===current)return;
-              var r=e.getBoundingClientRect(),dx=r.left+r.width/2-ax,dy=r.top+r.height/2-ay;
-              if('$direction'==='left'&&dx>=-4)return;
-              if('$direction'==='right'&&dx<=4)return;
-              if('$direction'==='up'&&dy>=-4)return;
-              if('$direction'==='down'&&dy<=4)return;
-              var main=('$direction'==='left'||'$direction'==='right')?Math.abs(dx):Math.abs(dy);
-              var cross=('$direction'==='left'||'$direction'==='right')?Math.abs(dy):Math.abs(dx);
-              var value=main+cross*2.5;
-              if(value<score){score=value;best=e;}
-            });
-            if(best)current=best;
-          }
-          window.__caTvElement=current;
-          if(!current.hasAttribute('tabindex')&&!/^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/.test(current.tagName))
-            current.setAttribute('tabindex','0');
-          current.focus({preventScroll:true});
-          current.scrollIntoView({block:'nearest',inline:'nearest'});
-          var box=document.createElement('div');box.id='ca-tv-outline';
-          var r=current.getBoundingClientRect();
-          box.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;border:4px solid #e50914;box-shadow:0 0 0 2px white;border-radius:5px;left:'+(r.left-4)+'px;top:'+(r.top-4)+'px;width:'+r.width+'px;height:'+r.height+'px';
-          document.documentElement.appendChild(box);
-        })();
-        """.trimIndent()
+    private fun clickAtCursor() {
+        val x = cursorX.coerceIn(1f, (browser.width - 2).coerceAtLeast(1).toFloat())
+        val y = cursorY.coerceIn(1f, (browser.height - 2).coerceAtLeast(1).toFloat())
+        val now = android.os.SystemClock.uptimeMillis()
+        val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0)
+        val up = MotionEvent.obtain(now, now + 60, MotionEvent.ACTION_UP, x, y, 0)
+        browser.dispatchTouchEvent(down)
+        browser.dispatchTouchEvent(up)
+        down.recycle()
+        up.recycle()
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (fullscreen == null && event.action == KeyEvent.ACTION_DOWN) {
-            val direction = when (event.keyCode) {
-                KeyEvent.KEYCODE_DPAD_LEFT -> "left"
-                KeyEvent.KEYCODE_DPAD_RIGHT -> "right"
-                KeyEvent.KEYCODE_DPAD_UP -> "up"
-                KeyEvent.KEYCODE_DPAD_DOWN -> "down"
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> "click"
-                else -> null
+            val step = 28f * resources.displayMetrics.density * (if (event.repeatCount > 4) 1.8f else 1f)
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> cursorX -= step
+                KeyEvent.KEYCODE_DPAD_RIGHT -> cursorX += step
+                KeyEvent.KEYCODE_DPAD_UP -> cursorY -= step
+                KeyEvent.KEYCODE_DPAD_DOWN -> cursorY += step
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { clickAtCursor(); return true }
+                else -> return super.dispatchKeyEvent(event)
             }
-            if (direction != null) {
-                browser.evaluateJavascript(focusScript(direction), null)
-                return true
-            }
+            val edge = 18f * resources.displayMetrics.density
+            cursorX = cursorX.coerceIn(edge, (browser.width.toFloat() - edge).coerceAtLeast(edge))
+            cursorY = cursorY.coerceIn(edge, (browser.height.toFloat() - edge).coerceAtLeast(edge))
+            if (cursorY <= edge && event.keyCode == KeyEvent.KEYCODE_DPAD_UP) browser.scrollBy(0, -step.toInt() * 2)
+            if (cursorY >= browser.height - edge && event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN) browser.scrollBy(0, step.toInt() * 2)
+            cursor.invalidate()
+            return true
         }
         return super.dispatchKeyEvent(event)
     }
