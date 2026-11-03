@@ -1,146 +1,36 @@
 package com.candersondev.movytv
 
 import android.app.Activity
-import android.app.AlertDialog
-import android.graphics.BitmapFactory
 import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
-import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.*
-import org.json.JSONArray
-import org.json.JSONObject
-import org.json.JSONTokener
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
-import java.util.concurrent.Executors
+import android.widget.FrameLayout
+import android.widget.ProgressBar
 
-/** Native Android TV discovery UI; external catalogs supply metadata, not playback streams. */
+/** Dedicated Android TV browser. Movy owns its catalog, episode selection and playback. */
 class MainActivity : Activity() {
-    data class Title(val name: String, val type: String, val year: String, val description: String,
-                     val image: String, val rating: String, val source: String, val id: Int = 0, val pageUrl: String = "")
-    private val bg = Color.rgb(12, 12, 14)
-    private val panel = Color.rgb(31, 31, 35)
-    private val accent = Color.rgb(229, 9, 20)
-    private val worker = Executors.newFixedThreadPool(4)
+    private val home = "https://www.movy.sx/"
     private lateinit var root: FrameLayout
-    private lateinit var catalog: LinearLayout
     private lateinit var browser: WebView
-    private lateinit var spinner: ProgressBar
-    private lateinit var results: LinearLayout
-    private lateinit var search: EditText
-    private var fullScreen: View? = null
-    private var fullScreenCallback: WebChromeClient.CustomViewCallback? = null
-    private var browsing = false
-    private var pendingEpisode: Pair<Int, Int>? = null
-    private var detail: View? = null
-    private var playerOverlay: View? = null
-    private var nativeVideo: VideoView? = null
-    private var selected: Title? = null
-    private var activeSection = "all"
-    private var requestGeneration = 0
-    private val favorites by lazy { getSharedPreferences("ca_movie_tv", MODE_PRIVATE) }
-    private fun titleKey(title: Title) = title.type + "|" + title.name + "|" + title.year
-    private fun isFavorite(title: Title) = favorites.getBoolean(titleKey(title), false)
-    private fun toggleFavorite(title: Title) {
-        favorites.edit().putBoolean(titleKey(title), !isFavorite(title)).apply()
-        hideDetail()
-        showDetail(title)
-    }
-    private val movyMovies = mutableListOf<Title>()
-    private val movyShows = mutableListOf<Title>()
-    private var movyCatalogLoader: WebView? = null
-    private fun loadMovyCatalog() {
-        val pages = listOf("https://www.movy.sx/browse/movie", "https://www.movy.sx/browse/tv", "https://www.movy.sx/")
-        var index = 0
-        val loader = WebView(this)
-        movyCatalogLoader = loader
-        // Android WebView must be attached to a window to reliably render JS-driven listings.
-        loader.alpha = 0f
-        loader.isFocusable = false
-        root.addView(loader, FrameLayout.LayoutParams(1, 1))
-        loader.settings.javaScriptEnabled = true
-        loader.settings.domStorageEnabled = true
-        loader.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                request.url.host !in listOf("www.movy.sx", "movy.sx")
-            override fun onPageFinished(view: WebView, url: String) {
-                if (url.substringBefore("?").trimEnd('/') != pages.getOrNull(index)?.trimEnd('/')) return
-                view.postDelayed({
-                    if (movyCatalogLoader !== view) return@postDelayed
-                    val script = """(function(){
-                      return JSON.stringify(Array.from(document.querySelectorAll('a[href]')).map(function(a){
-                        var href=a.href;
-                        if(!/^https:\/\/(www\.)?movy\.sx\/(movie|tv|show)\/\d+/.test(href))return null;
-                        var img=a.querySelector('img')||(a.parentElement&&a.parentElement.querySelector('img'));
-                        var label=(img&&img.alt)||a.getAttribute('aria-label')||a.innerText||a.getAttribute('title')||'';
-                        var image=img&&(img.currentSrc||img.src||img.getAttribute('data-src'))||'';
-                        return {url:href,name:label.trim().slice(0,180),image:image,caption:(a.innerText||'').trim().slice(0,200)};
-                      }).filter(Boolean));
-                    })();"""
-                    view.evaluateJavascript(script) { encoded ->
-                        try {
-                            val raw = JSONTokener(encoded).nextValue() as String
-                            val arr = JSONArray(raw)
-                            val list = mutableListOf<Title>()
-                            for (i in 0 until arr.length()) {
-                                val obj = arr.getJSONObject(i)
-                                val link = obj.optString("url").substringBefore("?")
-                                val caption = obj.optString("caption")
-                                val label = obj.optString("name").ifBlank { caption }
-                                val year = Regex("""\b(?:19|20)\d{2}\b""").find(caption)?.value.orEmpty()
-                                val name = label.replace(Regex("""\s+(?:[0-9]\.[0-9]|(?:19|20)\d{2}).*"""), "").trim()
-                                if (name.isBlank() || !link.startsWith("https://www.movy.sx/") && !link.startsWith("https://movy.sx/")) continue
-                                val path = android.net.Uri.parse(link).path.orEmpty()
-                                // Only catalog actual title pages, not season/episode deep links.
-                                val moviePage = Regex("""^/movie/\d+/?$""").matches(path)
-                                val showPage = Regex("""^/(?:tv|show)/\d+/?$""").matches(path)
-                                if (!moviePage && !showPage) continue
-                                if (index == 0 && !moviePage) continue
-                                if (index == 1 && !showPage) continue
-                                list.add(Title(name, if (moviePage) "Movie" else "TV Show",
-                                    year, "", obj.optString("image"), "—", "Movy", 0, link))
-                            }
-                            val movieItems = list.filter { it.type == "Movie" }.distinctBy { it.pageUrl }
-                            val showItems = list.filter { it.type == "TV Show" }.distinctBy { it.pageUrl }
-                            if (index == 0 || (index == 2 && movyMovies.isEmpty())) {
-                                movyMovies.clear()
-                                movyMovies.addAll(movieItems)
-                            }
-                            if (index == 1 || (index == 2 && movyShows.isEmpty())) {
-                                movyShows.clear()
-                                movyShows.addAll(showItems)
-                            }
-                            if (search.text.isNotBlank()) performSearch(search.text.toString())
-                            else renderHome(activeSection)
-                        } catch (e: Exception) { android.util.Log.w("CAMovy", "Catalog parsing failed", e) }
-                        index++
-                        if (index < pages.size) view.loadUrl(pages[index])
-                        else { movyCatalogLoader = null; root.removeView(view); view.destroy() }
-                    }
-                }, 3500)
-            }
-        }
-        loader.loadUrl(pages[0])
-    }
-    private val shows = mutableListOf<Title>()
-    private val movies = mutableListOf<Title>()
+    private lateinit var loading: ProgressBar
+    private var fullscreen: View? = null
+    private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-        root = FrameLayout(this).apply { setBackgroundColor(bg) }
+        window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        setContentView(root)
         browser = WebView(this).apply {
-            visibility = View.GONE
+            setBackgroundColor(Color.BLACK)
             isFocusable = true
             isFocusableInTouchMode = true
             settings.javaScriptEnabled = true
@@ -150,638 +40,98 @@ class MainActivity : Activity() {
             settings.javaScriptCanOpenWindowsAutomatically = false
             settings.allowFileAccess = false
             settings.allowContentAccess = false
-            settings.javaScriptCanOpenWindowsAutomatically = false
             webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) =
-                    request.url.scheme != "https"
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                    val scheme = request.url.scheme
+                    return scheme != "https" && scheme != "http"
+                }
                 override fun onPageFinished(view: WebView, url: String) {
-                    spinner.visibility = View.GONE
-                    if (pendingEpisode != null && (url.startsWith("https://www.movy.sx/") || url.startsWith("https://movy.sx/"))) {
-                        val target = pendingEpisode
-                        pendingEpisode = null
-                        if (target != null) view.postDelayed({
-                            if (!browsing) return@postDelayed
-                            val script = """(function(){
-                              var season=${target.first},episode=${target.second};
-                              var nodes=Array.from(document.querySelectorAll('button,a,[role="button"],select,option'));
-                              var matches=nodes.filter(function(el){
-                                var t=(el.innerText||el.textContent||el.getAttribute('aria-label')||'').trim().toLowerCase();
-                                return t==='episode '+episode||t==='ep '+episode||t==='e'+episode||
-                                  t==='season '+season||t==='s'+season;
-                              });
-                              var label=document.getElementById('ca-episode-hint');
-                              if(!label){
-                                label=document.createElement('div');label.id='ca-episode-hint';
-                                label.style.cssText='position:fixed;top:12px;right:12px;z-index:2147483647;background:#151515;color:white;border:2px solid #e50914;padding:12px 18px;border-radius:8px;font:bold 17px sans-serif;pointer-events:none';
-                                document.documentElement.appendChild(label);
-                              }
-                              label.textContent='Select Season '+season+' · Episode '+episode;
-                              var exact=matches.find(function(el){
-                                var t=(el.innerText||el.textContent||'').trim().toLowerCase();
-                                return t==='episode '+episode||t==='ep '+episode||t==='e'+episode;
-                              });
-                              var pick=exact||matches[0];
-                              if(pick){
-                                pick.scrollIntoView({block:'center'});
-                                pick.style.outline='4px solid #e50914';
-                              }
-                            })();"""
-                            view.evaluateJavascript(script, null)
-                        }, 1200)
-                    }
-                    if (url.startsWith("https://www.movy.sx/") || url.startsWith("https://movy.sx/")) {
-                        view.evaluateJavascript("""(function(){
-                          if(!document.getElementById('ca-tv-focus')){
-                            var s=document.createElement('style');s.id='ca-tv-focus';
-                            s.textContent='a:focus,button:focus,input:focus,[tabindex]:focus,[role="button"]:focus{outline:5px solid #00e5c0 !important;outline-offset:3px !important;box-shadow:0 0 0 5px #000,0 0 24px #00e5c0 !important;z-index:999999 !important;position:relative !important}';
-                            document.head.appendChild(s);
-                          }
-                          if(document.activeElement===document.body){
-                            var first=document.querySelector('a[href],button,[tabindex="0"]');
-                            if(first)first.focus();
-                          }
-                        })();""", null)
-                    }
+                    loading.visibility = View.GONE
+                    view.evaluateJavascript(focusScript("init"), null)
                 }
             }
             webChromeClient = object : WebChromeClient() {
+                override fun onProgressChanged(view: WebView, newProgress: Int) {
+                    loading.visibility = if (newProgress < 100) View.VISIBLE else View.GONE
+                }
                 override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-                    if (fullScreen != null) { callback.onCustomViewHidden(); return }
-                    fullScreen = view
-                    fullScreenCallback = callback
-                    browser.evaluateJavascript("document.getElementById('ca-tv-selection-box')?.remove();", null)
+                    if (fullscreen != null) { callback.onCustomViewHidden(); return }
+                    fullscreen = view
+                    fullscreenCallback = callback
                     browser.visibility = View.GONE
                     root.addView(view, FrameLayout.LayoutParams(-1, -1))
+                    view.requestFocus()
                 }
-                override fun onHideCustomView() {
-                    fullScreen?.let { root.removeView(it) }
-                    fullScreen = null
-                    fullScreenCallback?.onCustomViewHidden()
-                    fullScreenCallback = null
-                    browser.visibility = View.VISIBLE
-                    browser.requestFocus()
-                }
+                override fun onHideCustomView() { exitFullscreen() }
             }
         }
-        val scroll = ScrollView(this).apply {
-            descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
-            isFillViewport = true
-            clipToPadding = false
-        }
-        catalog = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(48), dp(28), dp(48), dp(48))
-        }
-        scroll.addView(catalog)
-        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        header.addView(text("CA", 34f, accent, true))
-        header.addView(text("  MOVIE TV", 30f, Color.WHITE, true))
-        header.addView(Space(this), LinearLayout.LayoutParams(0, 1, 1f))
-
-        header.addView(action("Movy Home") { openWebsite("https://www.movy.sx/") })
-        catalog.addView(header)
-        catalog.addView(text("Your next movie night starts here", 18f, Color.LTGRAY).apply {
-            setPadding(0, dp(8), 0, dp(22))
-        })
-        search = EditText(this).apply {
-            hint = "Search movies or TV shows"
-            setSingleLine(true)
-            textSize = 19f
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.LTGRAY)
-            setPadding(dp(18), dp(12), dp(18), dp(12))
-            background = rounded(panel, 12)
-            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
-            setOnEditorActionListener { _, _, _ ->
-                performSearch(text.toString().trim()); true
-            }
-        }
-        catalog.addView(search, LinearLayout.LayoutParams(-1, dp(58)))
-        val quick = LinearLayout(this).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(14), 0, dp(14))
-        }
-        quick.addView(action("Movy Movies") { openWebsite("https://www.movy.sx/browse/movie") })
-        quick.addView(action("Movy TV") { openWebsite("https://www.movy.sx/browse/tv") })
-        quick.addView(action("Search") { performSearch(search.text.toString().trim()) })
-        quick.addView(action("TV Shows") { renderHome("shows") })
-        quick.addView(action("Movies") { renderHome("movies") })
-        quick.addView(action("My List") { renderHome("favorites") })
-        quick.addView(action("Home") { renderHome("all") })
-        catalog.addView(quick)
-        results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        catalog.addView(results)
-        root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
         root.addView(browser, FrameLayout.LayoutParams(-1, -1))
-        spinner = ProgressBar(this).apply { visibility = View.GONE }
-        root.addView(spinner, FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER))
-        setContentView(root)
-        quick.getChildAt(0).requestFocus()
-        renderMessage("Loading movie and TV catalogs…")
-        loadHome()
-        loadMovyCatalog()
-    }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-    private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
-        setColor(color); cornerRadius = dp(radius).toFloat()
-    }
-    private fun text(value: String, size: Float, color: Int, bold: Boolean = false) =
-        TextView(this).apply {
-            this.text = value
-            textSize = size
-            setTextColor(color)
-            if (bold) setTypeface(null, Typeface.BOLD)
-        }
-    private fun action(value: String, click: () -> Unit) = Button(this).apply {
-        text = value
-        isAllCaps = false
-        textSize = 15f
-        isFocusable = true
-        backgroundTintList = android.content.res.ColorStateList.valueOf(panel)
-        setTextColor(Color.WHITE)
-        setOnFocusChangeListener { _, focused ->
-            backgroundTintList = android.content.res.ColorStateList.valueOf(if (focused) accent else panel)
-            setTextColor(if (focused) Color.BLACK else Color.WHITE)
-            scaleX = if (focused) 1.04f else 1f
-            scaleY = if (focused) 1.04f else 1f
-        }
-        setOnClickListener { click() }
-    }
-    private fun renderMessage(message: String) {
-        results.removeAllViews()
-        results.addView(text(message, 19f, Color.LTGRAY))
-    }
-    private fun request(url: String): String {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 9000
-        connection.readTimeout = 9000
-        connection.setRequestProperty("User-Agent", "CA-Movie-App/1.1")
-        return try {
-            if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
-            connection.inputStream.bufferedReader().use { it.readText() }
-        } finally { connection.disconnect() }
-    }
-    private fun tvFromJson(item: JSONObject): Title {
-        val show = item.optJSONObject("show") ?: item
-        val img = show.optJSONObject("image")
-        val rating = show.optJSONObject("rating")?.optDouble("average", 0.0) ?: 0.0
-        return Title(show.optString("name", "Unknown"), "TV Show",
-            show.optString("premiered").take(4), clean(show.optString("summary")),
-            img?.optString("medium").orEmpty().replace("/medium/", "/original/"),
-            if (rating > 0) String.format("%.1f", rating) else "—", "TVmaze", show.optInt("id"))
-    }
-    private fun movieFromFeed(item: JSONObject): Title = Title(
-        item.optString("name", "Unknown"), "Movie",
-        item.optString("releaseDate").take(4),
-        item.optString("artistName", ""),
-        item.optString("artworkUrl100").replace("100x100bb", "600x600bb"),
-        "—", "Apple Charts")
-
-    private fun movieFromJson(item: JSONObject): Title = Title(
-        item.optString("trackName", item.optString("collectionName", "Unknown")),
-        "Movie", item.optString("releaseDate").take(4),
-        item.optString("longDescription", item.optString("shortDescription", "")),
-        item.optString("artworkUrl100").replace("100x100bb", "600x600bb"),
-        "—", "Apple Search API")
-    private fun clean(html: String) = android.text.Html.fromHtml(
-        html, android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim()
-
-    private fun loadHome() {
-        worker.execute {
-            val data = try {
-                val arr = JSONArray(request("https://api.tvmaze.com/shows?page=0"))
-                (0 until minOf(arr.length(), 80)).map { tvFromJson(arr.getJSONObject(it)) }
-            } catch (_: Exception) { emptyList() }
-            runOnUiThread {
-                shows.clear(); shows.addAll(data)
-                renderHome(activeSection)
-            }
-        }
-        worker.execute {
-            val chart = try {
-                val feed = JSONObject(request("https://rss.applemarketingtools.com/api/v2/us/movies/top-movies/100/movies.json"))
-                    .getJSONObject("feed").getJSONArray("results")
-                (0 until feed.length()).map { movieFromFeed(feed.getJSONObject(it)) }
-            } catch (_: Exception) { emptyList() }
-            val data = chart + listOf("action", "comedy", "drama", "thriller", "animation", "science fiction").flatMap { genre ->
-                try {
-                    val term = URLEncoder.encode(genre, "UTF-8")
-                    val arr = JSONObject(request("https://itunes.apple.com/search?term=$term&media=movie&entity=movie&country=us&limit=45"))
-                        .getJSONArray("results")
-                    (0 until arr.length()).map { movieFromJson(arr.getJSONObject(it)) }
-                } catch (_: Exception) { emptyList() }
-            }.distinctBy { it.name.lowercase() + it.year }
-            runOnUiThread {
-                movies.clear(); movies.addAll(data.distinctBy { it.name.lowercase() + it.year })
-                renderHome(activeSection)
-            }
-        }
-    }
-    private fun performSearch(term: String) {
-        if (term.isBlank()) { requestGeneration++; renderHome("all"); return }
-        val generation = ++requestGeneration
-        val query = term.trim()
-        val movyFilm = movyMovies.filter { it.name.contains(query, ignoreCase = true) }
-        val movyTv = movyShows.filter { it.name.contains(query, ignoreCase = true) }
-        results.removeAllViews()
-        if (movyFilm.isNotEmpty()) addRail("Movies on Movy", movyFilm)
-        if (movyTv.isNotEmpty()) addRail("TV Shows on Movy", movyTv)
-        if (movyFilm.isEmpty() && movyTv.isEmpty()) renderMessage("Searching for “$query”…")
-        worker.execute {
-            val encoded = URLEncoder.encode(query, "UTF-8")
-            val tv = try {
-                val arr = JSONArray(request("https://api.tvmaze.com/search/shows?q=$encoded"))
-                (0 until arr.length()).map { tvFromJson(arr.getJSONObject(it)) }
-            } catch (_: Exception) { emptyList() }
-            val film = try {
-                val arr = JSONObject(request("https://itunes.apple.com/search?term=$encoded&media=movie&entity=movie&country=us&limit=50"))
-                    .getJSONArray("results")
-                (0 until arr.length()).map { movieFromJson(arr.getJSONObject(it)) }
-            } catch (_: Exception) { emptyList() }
-            runOnUiThread {
-                if (generation != requestGeneration) return@runOnUiThread
-                results.removeAllViews()
-                val currentMovyFilm = movyMovies.filter { it.name.contains(query, ignoreCase = true) }
-                val currentMovyTv = movyShows.filter { it.name.contains(query, ignoreCase = true) }
-                if (currentMovyFilm.isNotEmpty()) addRail("Movies on Movy", currentMovyFilm)
-                if (currentMovyTv.isNotEmpty()) addRail("TV Shows on Movy", currentMovyTv)
-                val otherFilm = film.filterNot { candidate ->
-                    currentMovyFilm.any { it.name.equals(candidate.name, ignoreCase = true) }
-                }
-                val otherTv = tv.filterNot { candidate ->
-                    currentMovyTv.any { it.name.equals(candidate.name, ignoreCase = true) }
-                }
-                if (otherFilm.isNotEmpty()) addRail("Other movie results (metadata only)", otherFilm)
-                if (otherTv.isNotEmpty()) addRail("Other TV results (metadata only)", otherTv)
-                if (currentMovyFilm.isEmpty() && currentMovyTv.isEmpty() && otherFilm.isEmpty() && otherTv.isEmpty())
-                    renderMessage("No results. Try another title or check your connection.")
-            }
-        }
-    }
-    private fun renderHome(filter: String) {
-        requestGeneration++
-        activeSection = filter
-        results.removeAllViews()
-        if (filter == "favorites") {
-            val saved = (movyMovies + movyShows + movies + shows).filter { isFavorite(it) }.distinctBy { titleKey(it) }
-            if (saved.isEmpty()) renderMessage("Your List is empty. Open a title and select + My List.")
-            else addRail("My List", saved)
-            return
-        }
-        val featured = (movyMovies.firstOrNull() ?: movyShows.firstOrNull() ?: movies.firstOrNull() ?: shows.firstOrNull())
-        if (filter == "all" && featured != null) {
-            val hero = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(28), dp(26), dp(28), dp(26))
-                background = rounded(panel, 16)
-            }
-            hero.addView(text("FEATURED TONIGHT", 14f, accent, true))
-            hero.addView(text(featured.name, 36f, Color.WHITE, true))
-            hero.addView(text(featured.description.take(230).ifBlank { featured.type + " · " + featured.year },
-                17f, Color.LTGRAY).apply { setPadding(0, dp(10), 0, dp(14)); maxLines = 3 })
-            hero.addView(action("View Details") { showDetail(featured) })
-            results.addView(hero)
-        }
-        if (filter != "shows") {
-            if (movyMovies.isNotEmpty()) addRail("Movies on Movy", movyMovies)
-            if (movies.isEmpty()) results.addView(text("Movies are loading or unavailable.", 17f, Color.LTGRAY))
-            else {
-                addRail("Movies For You", movies.take(45))
-                if (movies.size > 45) addRail("More Movies", movies.drop(45).take(45))
-            }
-        }
-        if (filter != "movies") {
-            if (movyShows.isNotEmpty()) addRail("TV Shows on Movy", movyShows)
-            if (shows.isEmpty()) results.addView(text("TV shows are loading or unavailable.", 17f, Color.LTGRAY))
-            else {
-                addRail("TV Series", shows.take(40))
-                if (shows.size > 40) addRail("More Series", shows.drop(40).take(40))
-            }
-        }
-    }
-    private fun addRail(heading: String, titles: List<Title>) {
-        results.addView(text(heading, 25f, Color.WHITE, true).apply {
-            setPadding(0, dp(22), 0, dp(12))
-        })
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        titles.take(45).forEach { title ->
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                isFocusable = true
-                background = rounded(panel, 12)
-                setPadding(dp(7), dp(7), dp(7), dp(10))
-                setOnClickListener { showDetail(title) }
-                setOnFocusChangeListener { view, focused ->
-                    if (focused) view.post { view.requestRectangleOnScreen(android.graphics.Rect(0, 0, view.width, view.height), false) }
-                    background = rounded(if (focused) accent else panel, 12)
-                    alpha = if (focused) 1f else 0.9f
-                    scaleX = if (focused) 1.06f else 1f
-                    scaleY = if (focused) 1.06f else 1f
-                    elevation = if (focused) dp(14).toFloat() else 0f
-                }
-            }
-            val poster = ImageView(this).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                setBackgroundColor(Color.rgb(40, 52, 70))
-                contentDescription = title.name
-            }
-            card.addView(poster, LinearLayout.LayoutParams(dp(155), dp(225)))
-            card.addView(text(title.name, 15f, Color.WHITE, true).apply {
-                maxLines = 2
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setPadding(0, dp(8), 0, 0)
-            }, LinearLayout.LayoutParams(dp(155), dp(44)))
-            card.addView(text("${title.year}  ·  ${title.type}", 12f, Color.LTGRAY))
-            val lp = LinearLayout.LayoutParams(dp(169), dp(314)).apply { rightMargin = dp(14) }
-            row.addView(card, lp)
-            loadPoster(title.image, poster)
-        }
-        val horizontal = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
-            clipToPadding = false
-        }
-        horizontal.addView(row)
-        results.addView(horizontal)
-    }
-    private fun loadPoster(url: String, image: ImageView) {
-        if (!url.startsWith("https://")) return
-        worker.execute {
-            try {
-                val connection = URL(url).openConnection() as HttpURLConnection
-                connection.connectTimeout = 7000
-                connection.readTimeout = 7000
-                val bitmap = try {
-                    connection.inputStream.use { BitmapFactory.decodeStream(it) }
-                } finally { connection.disconnect() }
-                if (bitmap != null) runOnUiThread { image.setImageBitmap(bitmap) }
-            } catch (_: Exception) { }
-        }
-    }
-    private fun showDetail(title: Title) {
-        selected = title
-        val overlay = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(80), dp(50), dp(80), dp(50))
-            setBackgroundColor(bg)
-        }
-        overlay.addView(text(title.name, 38f, Color.WHITE, true))
-        overlay.addView(text("${title.type}  •  ${title.year}  •  Rating: ${title.rating}", 19f, accent).apply {
-            setPadding(0, dp(16), 0, dp(20))
-        })
-        overlay.addView(text(title.description.ifBlank { "No description available." }.take(900), 19f, Color.LTGRAY).apply {
-            setPadding(0, 0, 0, dp(24))
-        })
-        overlay.addView(text("Metadata: ${title.source}. Availability and playback are not provided by this catalog.", 15f, Color.LTGRAY))
-        if (title.type == "TV Show") {
-            overlay.addView(action("Browse seasons & episodes") { showEpisodes(title) })
-        }
-        overlay.addView(action(if (isFavorite(title)) "✓ Remove from My List" else "+ My List") { toggleFavorite(title) })
-        overlay.addView(action(if (title.pageUrl.isNotBlank()) "Watch on Movy" else "Browse playback on Movy") { hideDetail(); openWebsite(title.pageUrl.ifBlank { if (title.type == "Movie") "https://www.movy.sx/browse/movie" else "https://www.movy.sx/browse/tv" }) })
-        overlay.addView(action("Back to catalog") { hideDetail() })
-        detail = overlay
-        root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
-        overlay.getChildAt(4).requestFocus()
-    }
-    private fun showEpisodes(title: Title) {
-        hideDetail()
-        val scroll = ScrollView(this).apply { isFillViewport = true }
-        val column = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(65), dp(30), dp(65), dp(40))
-            setBackgroundColor(bg)
-        }
-        scroll.addView(column)
-        column.addView(text(title.name + " — Episodes", 30f, Color.WHITE, true))
-        column.addView(text("Episode guide: TVmaze metadata. Selecting an episode does not automatically cue that episode on Movy.", 15f, Color.LTGRAY))
-        if (title.pageUrl.isNotBlank()) column.addView(action("Open this show on Movy") { openWebsite(title.pageUrl) })
-        val back = action("Back to show") { hideDetail(); showDetail(title) }
-        column.addView(back)
-        val status = text("Loading seasons and episodes…", 19f, Color.LTGRAY)
-        column.addView(status)
-        detail = scroll
-        root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
-        back.requestFocus()
-        worker.execute {
-            val showId = if (title.id > 0) title.id else try {
-                val encoded = URLEncoder.encode(title.name, "UTF-8")
-                val matches = JSONArray(request("https://api.tvmaze.com/search/shows?q=$encoded"))
-                val match = (0 until matches.length()).map { matches.getJSONObject(it).getJSONObject("show") }
-                    .firstOrNull { it.optString("name").trim().equals(title.name.trim(), ignoreCase = true) }
-                match?.optInt("id", 0) ?: 0
-            } catch (_: Exception) { 0 }
-            val episodes = try {
-                if (showId <= 0) throw IllegalStateException("No matching episode metadata")
-                val arr = JSONArray(request("https://api.tvmaze.com/shows/$showId/episodes?specials=1"))
-                (0 until arr.length()).map { arr.getJSONObject(it) }
-            } catch (_: Exception) { emptyList() }
-            runOnUiThread {
-                if (detail !== scroll) return@runOnUiThread
-                column.removeView(status)
-                if (episodes.isEmpty()) {
-                    column.addView(text("No matching episode guide found. You can still open the show on Movy.", 18f, Color.LTGRAY))
-                    if (title.pageUrl.isNotBlank()) column.addView(action("Open show on Movy") { openWebsite(title.pageUrl) })
-                } else {
-                    episodes.groupBy { it.optInt("season") }.toSortedMap().forEach { (season, items) ->
-                        column.addView(text("Season $season", 25f, accent, true).apply {
-                            setPadding(0, dp(18), 0, dp(8))
-                        })
-                        items.forEach { episode ->
-                            val number = episode.optInt("number")
-                            val name = episode.optString("name", "Episode")
-                            val label = if (number > 0) "E$number — $name" else "Special — $name"
-                            column.addView(action(label) {
-                                val summary = clean(episode.optString("summary"))
-                                AlertDialog.Builder(this)
-                                    .setTitle("Season $season · $label")
-                                    .setMessage((summary.ifBlank { "No episode description available." }) +
-                                        "\\n\\nEpisode metadata does not include a playable video URL.")
-                                    .setPositiveButton("OK", null)
-                                    .setNeutralButton(if (title.pageUrl.isNotBlank()) "Find episode on Movy" else "Browse Movy TV") { _, _ ->
-                                        // Movy does not expose a verified episode URL pattern.
-                                        // Preserve the working show URL rather than inventing a path.
-                                        if (title.pageUrl.isNotBlank() && number > 0) pendingEpisode = season to number
-                                        openWebsite(title.pageUrl.ifBlank { "https://www.movy.sx/browse/tv" })
-                                    }
-                                    .show()
-                            }.apply {
-                                gravity = Gravity.START or Gravity.CENTER_VERTICAL
-                                maxLines = 2
-                            }, LinearLayout.LayoutParams(-1, dp(64)))
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private fun hideDetail() {
-        detail?.let { root.removeView(it) }
-        detail = null
-        selected = null
-    }
-    private fun openWebsite(url: String = "https://www.movy.sx/") {
-        hideDetail()
-        browsing = true
-        browser.visibility = View.VISIBLE
-        browser.bringToFront()
-        spinner.bringToFront()
-        spinner.visibility = View.VISIBLE
-        if (browser.url != url) browser.loadUrl(url)
-        else if (pendingEpisode != null) browser.reload()
-        else spinner.visibility = View.GONE
+        loading = ProgressBar(this).apply { isIndeterminate = true }
+        root.addView(loading, FrameLayout.LayoutParams(64, 64, android.view.Gravity.CENTER))
+        if (savedInstanceState != null) browser.restoreState(savedInstanceState)
+        else browser.loadUrl(home)
         browser.requestFocus()
     }
-    private fun promptVideoUrl() {
-        val field = EditText(this).apply {
-            hint = "https://example.com/video.mp4"
-            setSingleLine(true)
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or
-                    android.text.InputType.TYPE_TEXT_VARIATION_URI
-            setTextColor(Color.BLACK)
-            setHintTextColor(Color.DKGRAY)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Play your video")
-            .setMessage("Enter a direct HTTPS video URL that you are authorized to stream. A website page URL will not work.")
-            .setView(field)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Play") { _, _ ->
-                val url = field.text.toString().trim()
-                val uri = android.net.Uri.parse(url)
-                if (uri.scheme != "https" || uri.host.isNullOrBlank()) {
-                    Toast.makeText(this, "Please enter a valid HTTPS video URL", Toast.LENGTH_LONG).show()
-                } else {
-                    playVideo(url)
-                }
-            }.show()
+
+    private fun exitFullscreen() {
+        fullscreen?.let { root.removeView(it) }
+        fullscreen = null
+        val callback = fullscreenCallback
+        fullscreenCallback = null
+        callback?.onCustomViewHidden()
+        browser.visibility = View.VISIBLE
+        browser.requestFocus()
     }
 
-    private fun playVideo(url: String) {
-        stopVideo()
-        val frame = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        val video = VideoView(this).apply {
-            setVideoURI(android.net.Uri.parse(url))
-            setOnPreparedListener { media ->
-                media.isLooping = false
-                start()
-            }
-            setOnErrorListener { _, _, _ ->
-                Toast.makeText(this@MainActivity, "Unable to play this video. Check the direct URL or codec.", Toast.LENGTH_LONG).show()
-                stopVideo()
-                true
-            }
-            setOnCompletionListener { stopVideo() }
-        }
-        nativeVideo = video
-        frame.addView(video, FrameLayout.LayoutParams(-1, -1))
-        val controller = MediaController(this).apply {
-            setAnchorView(video)
-            setMediaPlayer(video)
-        }
-        video.setMediaController(controller)
-        playerOverlay = frame
-        root.addView(frame, FrameLayout.LayoutParams(-1, -1))
-        frame.bringToFront()
-        video.requestFocus()
-        video.start()
-    }
-
-    private fun stopVideo() {
-        nativeVideo?.stopPlayback()
-        nativeVideo = null
-        playerOverlay?.let { root.removeView(it) }
-        playerOverlay = null
-    }
-
-    private fun browserNavigationScript(direction: String): String = """
-        (function(){
-          var dir='$direction', win=window;
-          var playing=Array.from(document.querySelectorAll('video')).some(function(v){
-            var r=v.getBoundingClientRect();
-            return !v.paused && r.width>200 && r.height>100;
-          });
-          if(playing){
-            var existing=document.getElementById('ca-tv-selection-box');
-            if(existing)existing.style.display='none';
-            win.__caTvSelected=null;
-            return;
+    private fun focusScript(direction: String): String {
+        // Focus only visible controls; never infer playback or episode URLs.
+        return """
+        (function() {
+          if (document.fullscreenElement || document.querySelector('video:not([paused])') &&
+              Array.from(document.querySelectorAll('video')).some(v => !v.paused)) return;
+          var old=document.getElementById('ca-tv-outline');
+          if(old)old.remove();
+          var elements=Array.from(document.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[tabindex]'))
+            .filter(function(e) {
+              var r=e.getBoundingClientRect(),s=getComputedStyle(e);
+              return r.width>5 && r.height>5 && s.visibility!=='hidden' && s.display!=='none' &&
+                !e.disabled && e.getAttribute('tabindex')!=='-1';
+            });
+          if(!elements.length)return;
+          var current=window.__caTvElement;
+          if(!current || !elements.includes(current)) current=document.activeElement;
+          if(!elements.includes(current))current=elements[0];
+          if('$direction'==='click') { current.click(); return; }
+          if('$direction'!=='init') {
+            var a=current.getBoundingClientRect(),ax=a.left+a.width/2,ay=a.top+a.height/2;
+            var best=null,score=Infinity;
+            elements.forEach(function(e){
+              if(e===current)return;
+              var r=e.getBoundingClientRect(),dx=r.left+r.width/2-ax,dy=r.top+r.height/2-ay;
+              if('$direction'==='left' && dx>=-4)return;
+              if('$direction'==='right' && dx<=4)return;
+              if('$direction'==='up' && dy>=-4)return;
+              if('$direction'==='down' && dy<=4)return;
+              var main=('$direction'==='left'||'$direction'==='right')?Math.abs(dx):Math.abs(dy);
+              var cross=('$direction'==='left'||'$direction'==='right')?Math.abs(dy):Math.abs(dx);
+              var value=main+cross*2.5;
+              if(value<score){score=value;best=e;}
+            });
+            if(best)current=best;
           }
-          var selector='a[href],button,input,select,textarea,[role="button"],[role="link"],[tabindex]:not([tabindex="-1"]),video,[onclick],article,[class*="poster"],[class*="Poster"],[class*="card"],[class*="Card"]';
-          var nodes=Array.from(document.querySelectorAll(selector)).filter(function(e){
-            var r=e.getBoundingClientRect(),s=getComputedStyle(e);
-            if(r.width<22||r.height<15||s.visibility==='hidden'||s.display==='none'||e.disabled)return false;
-            if(e.tagName==='ARTICLE' || /poster|card/i.test(e.className||'')){
-              return !Array.from(e.querySelectorAll('a[href],button,[onclick]')).some(function(child){
-                var cr=child.getBoundingClientRect();return cr.width>15&&cr.height>15;
-              });
-            }
-            return true;
-          });
-          if(!nodes.length)return;
-          if(dir==='click'){
-            var oldBox=document.getElementById('ca-tv-selection-box');
-            if(oldBox)oldBox.style.display='none';
-          }
-          var old=win.__caTvSelected;
-          var active=nodes.indexOf(old)>=0?old:document.activeElement;
-          var marker=document.getElementById('ca-tv-selection-box');
-          if(!marker){
-            marker=document.createElement('div');marker.id='ca-tv-selection-box';
-            marker.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;border:5px solid #ff3045;border-radius:9px;box-shadow:0 0 0 3px white,0 0 22px 8px rgba(229,9,20,.8);box-sizing:border-box;transition:top .1s,left .1s;display:none';
-            document.documentElement.appendChild(marker);
-          }
-          function show(el){
-            if(!el)return;
-            win.__caTvSelected=el;
-            if(!el.hasAttribute('tabindex')&&!/^(A|BUTTON|INPUT|SELECT|TEXTAREA|VIDEO)$/.test(el.tagName))el.setAttribute('tabindex','-1');
-            el.focus({preventScroll:true});
-            el.scrollIntoView({block:'center',inline:'center'});
-            function draw(){
-              var r=el.getBoundingClientRect();
-              marker.style.left=Math.max(0,r.left-4)+'px';
-              marker.style.top=Math.max(0,r.top-4)+'px';
-              marker.style.width=Math.min(innerWidth-Math.max(0,r.left-4),r.width+8)+'px';
-              marker.style.height=Math.min(innerHeight-Math.max(0,r.top-4),r.height+8)+'px';
-              marker.style.display='block';
-            }
-            requestAnimationFrame(draw);
-            win.__caTvDraw=draw;
-          }
-          if(!win.__caTvTracking){
-            win.__caTvTracking=true;
-            window.addEventListener('scroll',function(){if(win.__caTvDraw)win.__caTvDraw();},true);
-            window.addEventListener('resize',function(){if(win.__caTvDraw)win.__caTvDraw();});
-          }
-          if(dir==='click'){
-            if(active&&active!==document.body){
-              if(active.tagName==='VIDEO'){if(active.paused)active.play();else active.pause();}
-              else active.click();
-              show(active);
-            }else show(nodes[0]);
-            return;
-          }
-          if(nodes.indexOf(active)<0){show(nodes[0]);return;}
-          var a=active.getBoundingClientRect(),ax=a.left+a.width/2,ay=a.top+a.height/2;
-          var best=null,score=Infinity;
-          nodes.forEach(function(el){
-            if(el===active)return;
-            var r=el.getBoundingClientRect(),x=r.left+r.width/2-ax,y=r.top+r.height/2-ay;
-            var forward=dir==='left'?-x:dir==='right'?x:dir==='up'?-y:y;
-            if(forward<=5)return;
-            var lateral=(dir==='left'||dir==='right')?Math.abs(y):Math.abs(x);
-            var cost=forward+lateral*3;
-            if(cost<score){score=cost;best=el;}
-          });
-          if(best)show(best);
-          else window.scrollBy(0,dir==='down'?280:dir==='up'?-280:0);
+          window.__caTvElement=current;
+          current.focus({preventScroll:true});
+          current.scrollIntoView({block:'nearest',inline:'nearest'});
+          var box=document.createElement('div');box.id='ca-tv-outline';
+          var r=current.getBoundingClientRect();
+          box.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;border:4px solid #e50914;box-shadow:0 0 0 2px white;border-radius:5px;left:'+(r.left-4)+'px;top:'+(r.top-4)+'px;width:'+r.width+'px;height:'+r.height+'px';
+          document.documentElement.appendChild(box);
         })();
-    """.trimIndent()
+        """.trimIndent()
+    }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (browsing && fullScreen == null && playerOverlay == null && event.action == KeyEvent.ACTION_DOWN) {
+        if (fullscreen == null && event.action == KeyEvent.ACTION_DOWN) {
             val direction = when (event.keyCode) {
                 KeyEvent.KEYCODE_DPAD_LEFT -> "left"
                 KeyEvent.KEYCODE_DPAD_RIGHT -> "right"
@@ -791,27 +141,8 @@ class MainActivity : Activity() {
                 else -> null
             }
             if (direction != null) {
-                browser.evaluateJavascript(browserNavigationScript(direction), null)
+                browser.evaluateJavascript(focusScript(direction), null)
                 return true
-            }
-        }
-        if (playerOverlay != null && event.action == KeyEvent.ACTION_DOWN) {
-            val video = nativeVideo
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_DPAD_CENTER -> {
-                    video?.let { if (it.isPlaying) it.pause() else it.start() }
-                    return true
-                }
-                KeyEvent.KEYCODE_MEDIA_PLAY -> { video?.start(); return true }
-                KeyEvent.KEYCODE_MEDIA_PAUSE -> { video?.pause(); return true }
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    video?.seekTo(((video.currentPosition - 10000).coerceAtLeast(0)))
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    video?.seekTo(video.currentPosition + 10000)
-                    return true
-                }
             }
         }
         return super.dispatchKeyEvent(event)
@@ -820,22 +151,19 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         when {
-            playerOverlay != null -> stopVideo()
-            fullScreen != null -> browser.webChromeClient?.onHideCustomView()
-            browsing && browser.canGoBack() -> browser.goBack()
-            browsing -> {
-                browsing = false
-                browser.visibility = View.GONE
-                spinner.visibility = View.GONE
-                search.requestFocus()
-            }
-            detail != null -> hideDetail()
+            fullscreen != null -> exitFullscreen()
+            browser.canGoBack() -> browser.goBack()
             else -> super.onBackPressed()
         }
     }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        browser.saveState(outState)
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onDestroy() {
-        stopVideo()
-        worker.shutdownNow()
+        browser.stopLoading()
         browser.destroy()
         super.onDestroy()
     }
