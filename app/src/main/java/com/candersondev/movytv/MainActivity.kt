@@ -107,11 +107,15 @@ class MainActivity : Activity() {
             if(r.width>innerWidth*.95&&r.height>innerHeight*.65)return false;
             return true;
           });
-          // Avoid selecting a card wrapper and its inner link as separate targets.
+          // Keep nested Play / See more buttons navigable even inside a clickable result card.
           elements=elements.filter(function(e){
-            return !elements.some(function(parent){
-              return parent!==e&&parent.contains(e)&&
-                (parent.tagName==='A'||parent.tagName==='BUTTON'||parent.getAttribute('role')==='button');
+            var r=e.getBoundingClientRect();
+            return !elements.some(function(child){
+              if(child===e||!e.contains(child))return false;
+              var cr=child.getBoundingClientRect();
+              return Math.abs(cr.left-r.left)<3&&Math.abs(cr.top-r.top)<3&&
+                     Math.abs(cr.width-r.width)<3&&Math.abs(cr.height-r.height)<3&&
+                     (child.tagName==='BUTTON'||child.tagName==='A');
             });
           });
           if(!elements.length)return;
@@ -120,7 +124,19 @@ class MainActivity : Activity() {
           if(!elements.includes(current))current=elements[0];
           if('$direction'==='click') {
             current.focus();
-            current.click();
+            if(current.matches('input,textarea,select')){current.click();return;}
+            var r=current.getBoundingClientRect();
+            var x=Math.max(0,Math.min(innerWidth-1,r.left+r.width/2));
+            var y=Math.max(0,Math.min(innerHeight-1,r.top+r.height/2));
+            var hit=document.elementFromPoint(x,y);
+            var target=hit&&current.contains(hit)?hit:current;
+            var clickable=target.closest('button,a[href],[role="button"],[role="link"],[onclick]');
+            if(clickable&&current.contains(clickable))target=clickable;
+            target.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:1,pointerType:'mouse',clientX:x,clientY:y}));
+            target.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,clientX:x,clientY:y}));
+            target.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:1,pointerType:'mouse',clientX:x,clientY:y}));
+            target.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,clientX:x,clientY:y}));
+            target.click();
             return;
           }
           if('$direction'!=='init'){
