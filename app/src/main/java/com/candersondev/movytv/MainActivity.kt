@@ -84,34 +84,55 @@ class MainActivity : Activity() {
     }
 
     private fun focusScript(direction: String): String {
-        // Focus only visible controls; never infer playback or episode URLs.
+        // Movy uses custom clickable cards and player buttons, not just native HTML buttons.
         return """
         (function() {
-          if (document.fullscreenElement || document.querySelector('video:not([paused])') &&
-              Array.from(document.querySelectorAll('video')).some(v => !v.paused)) return;
+          var playing=Array.from(document.querySelectorAll('video')).some(function(v){return !v.paused && !v.ended;});
+          if(document.fullscreenElement || playing) {
+            document.getElementById('ca-tv-outline')?.remove();
+            return;
+          }
           var old=document.getElementById('ca-tv-outline');
           if(old)old.remove();
-          var elements=Array.from(document.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[tabindex]'))
-            .filter(function(e) {
-              var r=e.getBoundingClientRect(),s=getComputedStyle(e);
-              return r.width>5 && r.height>5 && s.visibility!=='hidden' && s.display!=='none' &&
-                !e.disabled && e.getAttribute('tabindex')!=='-1';
+          var selector='a[href],button,input,select,textarea,[role="button"],[role="link"],[role="option"],[role="menuitem"],[tabindex],[onclick],[data-testid],[data-state]';
+          var all=Array.from(document.querySelectorAll(selector));
+          // Also detect clickable divs, spans, images and SVG controls using cursor:pointer.
+          Array.from(document.querySelectorAll('div,span,img,svg')).forEach(function(e){
+            if(getComputedStyle(e).cursor==='pointer')all.push(e);
+          });
+          var elements=Array.from(new Set(all)).filter(function(e){
+            var r=e.getBoundingClientRect(),s=getComputedStyle(e);
+            if(r.width<8||r.height<8||s.visibility==='hidden'||s.display==='none'||s.pointerEvents==='none'||e.disabled)return false;
+            if(e.getAttribute('tabindex')==='-1')return false;
+            if(r.width>innerWidth*.95&&r.height>innerHeight*.65)return false;
+            return true;
+          });
+          // Avoid selecting a card wrapper and its inner link as separate targets.
+          elements=elements.filter(function(e){
+            return !elements.some(function(parent){
+              return parent!==e&&parent.contains(e)&&
+                (parent.tagName==='A'||parent.tagName==='BUTTON'||parent.getAttribute('role')==='button');
             });
+          });
           if(!elements.length)return;
           var current=window.__caTvElement;
-          if(!current || !elements.includes(current)) current=document.activeElement;
+          if(!current||!elements.includes(current))current=document.activeElement;
           if(!elements.includes(current))current=elements[0];
-          if('$direction'==='click') { current.click(); return; }
-          if('$direction'!=='init') {
+          if('$direction'==='click') {
+            current.focus();
+            current.click();
+            return;
+          }
+          if('$direction'!=='init'){
             var a=current.getBoundingClientRect(),ax=a.left+a.width/2,ay=a.top+a.height/2;
             var best=null,score=Infinity;
             elements.forEach(function(e){
               if(e===current)return;
               var r=e.getBoundingClientRect(),dx=r.left+r.width/2-ax,dy=r.top+r.height/2-ay;
-              if('$direction'==='left' && dx>=-4)return;
-              if('$direction'==='right' && dx<=4)return;
-              if('$direction'==='up' && dy>=-4)return;
-              if('$direction'==='down' && dy<=4)return;
+              if('$direction'==='left'&&dx>=-4)return;
+              if('$direction'==='right'&&dx<=4)return;
+              if('$direction'==='up'&&dy>=-4)return;
+              if('$direction'==='down'&&dy<=4)return;
               var main=('$direction'==='left'||'$direction'==='right')?Math.abs(dx):Math.abs(dy);
               var cross=('$direction'==='left'||'$direction'==='right')?Math.abs(dy):Math.abs(dx);
               var value=main+cross*2.5;
@@ -120,6 +141,8 @@ class MainActivity : Activity() {
             if(best)current=best;
           }
           window.__caTvElement=current;
+          if(!current.hasAttribute('tabindex')&&!/^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/.test(current.tagName))
+            current.setAttribute('tabindex','0');
           current.focus({preventScroll:true});
           current.scrollIntoView({block:'nearest',inline:'nearest'});
           var box=document.createElement('div');box.id='ca-tv-outline';
