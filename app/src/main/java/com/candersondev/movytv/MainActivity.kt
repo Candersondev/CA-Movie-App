@@ -115,6 +115,40 @@ class MainActivity : Activity() {
         up.recycle()
     }
 
+    private fun scrollAtCursor(dx: Int, dy: Int) {
+        // Scroll the nearest scrollable panel under the cursor, not only the main WebView.
+        // This handles search dialogs, vertical result lists, and horizontal poster rails.
+        val x = cursorX.coerceIn(1f, (browser.width - 2).coerceAtLeast(1).toFloat())
+        val y = cursorY.coerceIn(1f, (browser.height - 2).coerceAtLeast(1).toFloat())
+        val scale = resources.displayMetrics.density
+        val js = """
+            (function() {
+              var x = ${x / scale}, y = ${y / scale};
+              var dx = $dx, dy = $dy;
+              var e = document.elementFromPoint(x, y);
+              var candidates = [];
+              for (var p=e; p; p=p.parentElement) candidates.push(p);
+              candidates.push(document.scrollingElement || document.documentElement);
+              var horizontal = dx !== 0;
+              for (var i=0;i<candidates.length;i++) {
+                var el=candidates[i], style=getComputedStyle(el);
+                var overflow=horizontal?style.overflowX:style.overflowY;
+                var range=horizontal?el.scrollWidth-el.clientWidth:el.scrollHeight-el.clientHeight;
+                var position=horizontal?el.scrollLeft:el.scrollTop;
+                var delta=horizontal?dx:dy;
+                if(range>4 && (overflow==='auto'||overflow==='scroll'||el===document.scrollingElement||el===document.documentElement)
+                   && ((delta>0&&position<range-2)||(delta<0&&position>2))) {
+                  el.scrollBy({left:dx,top:dy,behavior:'auto'});
+                  return true;
+                }
+              }
+              window.scrollBy(dx,dy);
+              return false;
+            })();
+        """.trimIndent()
+        browser.evaluateJavascript(js, null)
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (fullscreen == null && event.action == KeyEvent.ACTION_DOWN) {
             val step = 28f * resources.displayMetrics.density * (if (event.repeatCount > 4) 1.8f else 1f)
@@ -129,8 +163,13 @@ class MainActivity : Activity() {
             val edge = 18f * resources.displayMetrics.density
             cursorX = cursorX.coerceIn(edge, (browser.width.toFloat() - edge).coerceAtLeast(edge))
             cursorY = cursorY.coerceIn(edge, (browser.height.toFloat() - edge).coerceAtLeast(edge))
-            if (cursorY <= edge && event.keyCode == KeyEvent.KEYCODE_DPAD_UP) browser.scrollBy(0, -step.toInt() * 2)
-            if (cursorY >= browser.height - edge && event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN) browser.scrollBy(0, step.toInt() * 2)
+            val scrollDistance = (step * 3).toInt()
+            when {
+                cursorX <= edge && event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> scrollAtCursor(-scrollDistance, 0)
+                cursorX >= browser.width - edge && event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> scrollAtCursor(scrollDistance, 0)
+                cursorY <= edge && event.keyCode == KeyEvent.KEYCODE_DPAD_UP -> scrollAtCursor(0, -scrollDistance)
+                cursorY >= browser.height - edge && event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN -> scrollAtCursor(0, scrollDistance)
+            }
             cursor.invalidate()
             return true
         }
