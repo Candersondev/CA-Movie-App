@@ -40,6 +40,7 @@ class MainActivity : Activity() {
     private var fullScreen: View? = null
     private var fullScreenCallback: WebChromeClient.CustomViewCallback? = null
     private var browsing = false
+    private var pendingEpisode: Pair<Int, Int>? = null
     private var detail: View? = null
     private var playerOverlay: View? = null
     private var nativeVideo: VideoView? = null
@@ -137,6 +138,39 @@ class MainActivity : Activity() {
                     request.url.scheme != "https"
                 override fun onPageFinished(view: WebView, url: String) {
                     spinner.visibility = View.GONE
+                    if (pendingEpisode != null && (url.startsWith("https://www.movy.sx/") || url.startsWith("https://movy.sx/"))) {
+                        val target = pendingEpisode
+                        pendingEpisode = null
+                        if (target != null) view.postDelayed({
+                            if (!browsing) return@postDelayed
+                            val script = """(function(){
+                              var season=${target.first},episode=${target.second};
+                              var nodes=Array.from(document.querySelectorAll('button,a,[role="button"],select,option'));
+                              var matches=nodes.filter(function(el){
+                                var t=(el.innerText||el.textContent||el.getAttribute('aria-label')||'').trim().toLowerCase();
+                                return t==='episode '+episode||t==='ep '+episode||t==='e'+episode||
+                                  t==='season '+season||t==='s'+season;
+                              });
+                              var label=document.getElementById('ca-episode-hint');
+                              if(!label){
+                                label=document.createElement('div');label.id='ca-episode-hint';
+                                label.style.cssText='position:fixed;top:12px;right:12px;z-index:2147483647;background:#151515;color:white;border:2px solid #e50914;padding:12px 18px;border-radius:8px;font:bold 17px sans-serif;pointer-events:none';
+                                document.documentElement.appendChild(label);
+                              }
+                              label.textContent='Select Season '+season+' · Episode '+episode;
+                              var exact=matches.find(function(el){
+                                var t=(el.innerText||el.textContent||'').trim().toLowerCase();
+                                return t==='episode '+episode||t==='ep '+episode||t==='e'+episode;
+                              });
+                              var pick=exact||matches[0];
+                              if(pick){
+                                pick.scrollIntoView({block:'center'});
+                                pick.style.outline='4px solid #e50914';
+                              }
+                            })();"""
+                            view.evaluateJavascript(script, null)
+                        }, 1200)
+                    }
                     if (url.startsWith("https://www.movy.sx/") || url.startsWith("https://movy.sx/")) {
                         view.evaluateJavascript("""(function(){
                           if(!document.getElementById('ca-tv-focus')){
@@ -487,7 +521,7 @@ class MainActivity : Activity() {
             overlay.addView(action("Browse seasons & episodes") { showEpisodes(title) })
         }
         overlay.addView(action(if (isFavorite(title)) "✓ Remove from My List" else "+ My List") { toggleFavorite(title) })
-        overlay.addView(action(if (title.pageUrl.isNotBlank()) "Open title on Movy" else "Browse playback on Movy") { hideDetail(); openWebsite(title.pageUrl.ifBlank { if (title.type == "Movie") "https://www.movy.sx/browse/movie" else "https://www.movy.sx/browse/tv" }) })
+        overlay.addView(action(if (title.pageUrl.isNotBlank()) "Watch on Movy" else "Browse playback on Movy") { hideDetail(); openWebsite(title.pageUrl.ifBlank { if (title.type == "Movie") "https://www.movy.sx/browse/movie" else "https://www.movy.sx/browse/tv" }) })
         overlay.addView(action("Back to catalog") { hideDetail() })
         detail = overlay
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
@@ -547,7 +581,8 @@ class MainActivity : Activity() {
                                     .setMessage((summary.ifBlank { "No episode description available." }) +
                                         "\\n\\nEpisode metadata does not include a playable video URL.")
                                     .setPositiveButton("OK", null)
-                                    .setNeutralButton(if (title.pageUrl.isNotBlank()) "Open show on Movy" else "Browse Movy TV") { _, _ ->
+                                    .setNeutralButton(if (title.pageUrl.isNotBlank()) "Find episode on Movy" else "Browse Movy TV") { _, _ ->
+                                        if (title.pageUrl.isNotBlank() && number > 0) pendingEpisode = season to number
                                         openWebsite(title.pageUrl.ifBlank { "https://www.movy.sx/browse/tv" })
                                     }
                                     .show()
