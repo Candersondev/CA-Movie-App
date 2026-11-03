@@ -513,36 +513,71 @@ class MainActivity : Activity() {
 
     private fun browserNavigationScript(direction: String): String = """
         (function(){
-          var dir='$direction';
-          var selector='a[href],button,input,select,textarea,[role="button"],[tabindex]:not([tabindex="-1"]),video';
+          var dir='$direction', win=window;
+          var selector='a[href],button,input,select,textarea,[role="button"],[role="link"],[tabindex]:not([tabindex="-1"]),video,[onclick],article,[class*="poster"],[class*="Poster"],[class*="card"],[class*="Card"]';
           var nodes=Array.from(document.querySelectorAll(selector)).filter(function(e){
             var r=e.getBoundingClientRect(),s=getComputedStyle(e);
-            return r.width>3&&r.height>3&&s.visibility!=='hidden'&&s.display!=='none'&&!e.disabled;
+            if(r.width<22||r.height<15||s.visibility==='hidden'||s.display==='none'||e.disabled)return false;
+            if(e.tagName==='ARTICLE' || /poster|card/i.test(e.className||'')){
+              return !Array.from(e.querySelectorAll('a[href],button,[onclick]')).some(function(child){
+                var cr=child.getBoundingClientRect();return cr.width>15&&cr.height>15;
+              });
+            }
+            return true;
           });
           if(!nodes.length)return;
-          var active=document.activeElement;
+          var old=win.__caTvSelected;
+          var active=nodes.indexOf(old)>=0?old:document.activeElement;
+          var marker=document.getElementById('ca-tv-selection-box');
+          if(!marker){
+            marker=document.createElement('div');marker.id='ca-tv-selection-box';
+            marker.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;border:5px solid #ff3045;border-radius:9px;box-shadow:0 0 0 3px white,0 0 22px 8px rgba(229,9,20,.8);box-sizing:border-box;transition:top .1s,left .1s;display:none';
+            document.documentElement.appendChild(marker);
+          }
+          function show(el){
+            if(!el)return;
+            win.__caTvSelected=el;
+            if(!el.hasAttribute('tabindex')&&!/^(A|BUTTON|INPUT|SELECT|TEXTAREA|VIDEO)$/.test(el.tagName))el.setAttribute('tabindex','-1');
+            el.focus({preventScroll:true});
+            el.scrollIntoView({block:'center',inline:'center'});
+            function draw(){
+              var r=el.getBoundingClientRect();
+              marker.style.left=Math.max(0,r.left-4)+'px';
+              marker.style.top=Math.max(0,r.top-4)+'px';
+              marker.style.width=Math.min(innerWidth-Math.max(0,r.left-4),r.width+8)+'px';
+              marker.style.height=Math.min(innerHeight-Math.max(0,r.top-4),r.height+8)+'px';
+              marker.style.display='block';
+            }
+            requestAnimationFrame(draw);
+            win.__caTvDraw=draw;
+          }
+          if(!win.__caTvTracking){
+            win.__caTvTracking=true;
+            window.addEventListener('scroll',function(){if(win.__caTvDraw)win.__caTvDraw();},true);
+            window.addEventListener('resize',function(){if(win.__caTvDraw)win.__caTvDraw();});
+          }
           if(dir==='click'){
             if(active&&active!==document.body){
               if(active.tagName==='VIDEO'){if(active.paused)active.play();else active.pause();}
               else active.click();
-            }else{nodes[0].focus();nodes[0].scrollIntoView({block:'center',inline:'center'});}
+              show(active);
+            }else show(nodes[0]);
             return;
           }
-          var current=nodes.indexOf(active);
-          if(current<0){nodes[0].focus();nodes[0].scrollIntoView({block:'center',inline:'center'});return;}
+          if(nodes.indexOf(active)<0){show(nodes[0]);return;}
           var a=active.getBoundingClientRect(),ax=a.left+a.width/2,ay=a.top+a.height/2;
           var best=null,score=Infinity;
           nodes.forEach(function(el){
             if(el===active)return;
             var r=el.getBoundingClientRect(),x=r.left+r.width/2-ax,y=r.top+r.height/2-ay;
             var forward=dir==='left'?-x:dir==='right'?x:dir==='up'?-y:y;
-            if(forward<=3)return;
+            if(forward<=5)return;
             var lateral=(dir==='left'||dir==='right')?Math.abs(y):Math.abs(x);
-            var cost=forward+lateral*2.8;
+            var cost=forward+lateral*3;
             if(cost<score){score=cost;best=el;}
           });
-          if(best){best.focus();best.scrollIntoView({block:'center',inline:'center'});}
-          else{window.scrollBy(0,dir==='down'?280:dir==='up'?-280:0);}
+          if(best)show(best);
+          else window.scrollBy(0,dir==='down'?280:dir==='up'?-280:0);
         })();
     """.trimIndent()
 
