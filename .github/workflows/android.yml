@@ -23,21 +23,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Configure Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install required SDK packages
-        run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
-
       - name: Configure Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
       - name: Build Android TV APK
-        run: gradle :app:assembleDebug --no-daemon --stacktrace --warning-mode all
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         if: success()
