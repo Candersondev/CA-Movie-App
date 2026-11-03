@@ -40,6 +40,8 @@ class MainActivity : Activity() {
     private var fullScreenCallback: WebChromeClient.CustomViewCallback? = null
     private var browsing = false
     private var detail: View? = null
+    private var playerOverlay: View? = null
+    private var nativeVideo: VideoView? = null
     private var selected: Title? = null
     private val shows = mutableListOf<Title>()
     private val movies = mutableListOf<Title>()
@@ -97,6 +99,7 @@ class MainActivity : Activity() {
         header.addView(text("MOVY", 34f, Color.WHITE, true))
         header.addView(text("  TV", 34f, accent, true))
         header.addView(Space(this), LinearLayout.LayoutParams(0, 1, 1f))
+        header.addView(action("Play video URL") { promptVideoUrl() })
         header.addView(action("Open website") { openWebsite() })
         catalog.addView(header)
         catalog.addView(text("Discover movies and television", 18f, Color.LTGRAY).apply {
@@ -317,6 +320,7 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(24))
         })
         overlay.addView(text("Metadata: ${title.source}. Availability and playback are not provided by this catalog.", 15f, Color.LTGRAY))
+        overlay.addView(action("Play authorized video URL") { promptVideoUrl() })
         overlay.addView(action("Browse on Movy website") { hideDetail(); openWebsite() })
         overlay.addView(action("Back to catalog") { hideDetail() })
         detail = overlay
@@ -339,9 +343,95 @@ class MainActivity : Activity() {
         else spinner.visibility = View.GONE
         browser.requestFocus()
     }
+    private fun promptVideoUrl() {
+        val field = EditText(this).apply {
+            hint = "https://example.com/video.mp4"
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                    android.text.InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(Color.BLACK)
+            setHintTextColor(Color.DKGRAY)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Play your video")
+            .setMessage("Enter a direct HTTPS video URL that you are authorized to stream. A website page URL will not work.")
+            .setView(field)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Play") { _, _ ->
+                val url = field.text.toString().trim()
+                val uri = android.net.Uri.parse(url)
+                if (uri.scheme != "https" || uri.host.isNullOrBlank()) {
+                    Toast.makeText(this, "Please enter a valid HTTPS video URL", Toast.LENGTH_LONG).show()
+                } else {
+                    playVideo(url)
+                }
+            }.show()
+    }
+
+    private fun playVideo(url: String) {
+        stopVideo()
+        val frame = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        val video = VideoView(this).apply {
+            setVideoURI(android.net.Uri.parse(url))
+            setOnPreparedListener { media ->
+                media.isLooping = false
+                start()
+            }
+            setOnErrorListener { _, _, _ ->
+                Toast.makeText(this@MainActivity, "Unable to play this video. Check the direct URL or codec.", Toast.LENGTH_LONG).show()
+                stopVideo()
+                true
+            }
+            setOnCompletionListener { stopVideo() }
+        }
+        nativeVideo = video
+        frame.addView(video, FrameLayout.LayoutParams(-1, -1))
+        val controller = MediaController(this).apply {
+            setAnchorView(video)
+            setMediaPlayer(video)
+        }
+        video.setMediaController(controller)
+        playerOverlay = frame
+        root.addView(frame, FrameLayout.LayoutParams(-1, -1))
+        frame.bringToFront()
+        video.requestFocus()
+        video.start()
+    }
+
+    private fun stopVideo() {
+        nativeVideo?.stopPlayback()
+        nativeVideo = null
+        playerOverlay?.let { root.removeView(it) }
+        playerOverlay = null
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (playerOverlay != null && event.action == KeyEvent.ACTION_DOWN) {
+            val video = nativeVideo
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_DPAD_CENTER -> {
+                    video?.let { if (it.isPlaying) it.pause() else it.start() }
+                    return true
+                }
+                KeyEvent.KEYCODE_MEDIA_PLAY -> { video?.start(); return true }
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> { video?.pause(); return true }
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    video?.seekTo(((video.currentPosition - 10000).coerceAtLeast(0)))
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    video?.seekTo(video.currentPosition + 10000)
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         when {
+            playerOverlay != null -> stopVideo()
             fullScreen != null -> browser.webChromeClient?.onHideCustomView()
             browsing && browser.canGoBack() -> browser.goBack()
             browsing -> {
@@ -355,6 +445,7 @@ class MainActivity : Activity() {
         }
     }
     override fun onDestroy() {
+        stopVideo()
         worker.shutdownNow()
         browser.destroy()
         super.onDestroy()
