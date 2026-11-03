@@ -17,6 +17,7 @@ import android.webkit.WebViewClient
 import android.widget.*
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -25,7 +26,7 @@ import java.util.concurrent.Executors
 /** Native Android TV discovery UI; external catalogs supply metadata, not playback streams. */
 class MainActivity : Activity() {
     data class Title(val name: String, val type: String, val year: String, val description: String,
-                     val image: String, val rating: String, val source: String, val id: Int = 0)
+                     val image: String, val rating: String, val source: String, val id: Int = 0, val pageUrl: String = "")
     private val bg = Color.rgb(12, 12, 14)
     private val panel = Color.rgb(31, 31, 35)
     private val accent = Color.rgb(229, 9, 20)
@@ -52,6 +53,63 @@ class MainActivity : Activity() {
         favorites.edit().putBoolean(titleKey(title), !isFavorite(title)).apply()
         hideDetail()
         showDetail(title)
+    }
+    private val movyMovies = mutableListOf<Title>()
+    private val movyShows = mutableListOf<Title>()
+    private var movyCatalogLoader: WebView? = null
+    private fun loadMovyCatalog() {
+        val pages = listOf("https://www.movy.sx/browse/movie", "https://www.movy.sx/browse/tv")
+        var index = 0
+        val loader = WebView(this)
+        movyCatalogLoader = loader
+        loader.settings.javaScriptEnabled = true
+        loader.settings.domStorageEnabled = true
+        loader.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+                request.url.host !in listOf("www.movy.sx", "movy.sx")
+            override fun onPageFinished(view: WebView, url: String) {
+                if (url != pages.getOrNull(index)) return
+                view.postDelayed({
+                    if (movyCatalogLoader !== view) return@postDelayed
+                    val script = """(function(){
+                      return JSON.stringify(Array.from(document.querySelectorAll('a[href]')).map(function(a){
+                        var href=a.href;
+                        if(!/^https:\/\/(www\.)?movy\.sx\/(movie|tv|show)\/\d+/.test(href))return null;
+                        var img=a.querySelector('img');
+                        var label=(img&&img.alt)||a.getAttribute('aria-label')||a.innerText||'';
+                        var image=img&&(img.currentSrc||img.src)||'';
+                        return {url:href,name:label.trim().slice(0,180),image:image,caption:(a.innerText||'').trim().slice(0,200)};
+                      }).filter(Boolean));
+                    })();"""
+                    view.evaluateJavascript(script) { encoded ->
+                        try {
+                            val raw = JSONTokener(encoded).nextValue() as String
+                            val arr = JSONArray(raw)
+                            val list = mutableListOf<Title>()
+                            for (i in 0 until arr.length()) {
+                                val obj = arr.getJSONObject(i)
+                                val link = obj.optString("url").substringBefore("?")
+                                val caption = obj.optString("caption")
+                                val label = obj.optString("name").ifBlank { caption }
+                                val year = Regex("""\b(?:19|20)\d{2}\b""").find(caption)?.value.orEmpty()
+                                val name = label.replace(Regex("""\s+(?:[0-9]\.[0-9]|(?:19|20)\d{2}).*"""), "").trim()
+                                if (name.isBlank() || !link.startsWith("https://www.movy.sx/") && !link.startsWith("https://movy.sx/")) continue
+                                list.add(Title(name, if (index == 0) "Movie" else "TV Show",
+                                    year, "", obj.optString("image"), "—", "Movy", 0, link))
+                            }
+                            val destination = if (index == 0) movyMovies else movyShows
+                            destination.clear()
+                            destination.addAll(list.distinctBy { it.pageUrl })
+                            renderHome(activeSection)
+                        } catch (_: Exception) { }
+                        index++
+                        if (index < pages.size) view.loadUrl(pages[index])
+                        else { movyCatalogLoader = null; view.destroy() }
+                    }
+                }, 1400)
+            }
+        }
+        loader.loadUrl(pages[0])
     }
     private val shows = mutableListOf<Title>()
     private val movies = mutableListOf<Title>()
@@ -168,6 +226,7 @@ class MainActivity : Activity() {
         quick.getChildAt(0).requestFocus()
         renderMessage("Loading movie and TV catalogs…")
         loadHome()
+        loadMovyCatalog()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -294,12 +353,12 @@ class MainActivity : Activity() {
         activeSection = filter
         results.removeAllViews()
         if (filter == "favorites") {
-            val saved = (movies + shows).filter { isFavorite(it) }
+            val saved = (movyMovies + movyShows + movies + shows).filter { isFavorite(it) }.distinctBy { titleKey(it) }
             if (saved.isEmpty()) renderMessage("Your List is empty. Open a title and select + My List.")
             else addRail("My List", saved)
             return
         }
-        val featured = (movies.firstOrNull() ?: shows.firstOrNull())
+        val featured = (movyMovies.firstOrNull() ?: movyShows.firstOrNull() ?: movies.firstOrNull() ?: shows.firstOrNull())
         if (filter == "all" && featured != null) {
             val hero = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -314,6 +373,7 @@ class MainActivity : Activity() {
             results.addView(hero)
         }
         if (filter != "shows") {
+            if (movyMovies.isNotEmpty()) addRail("Movies on Movy", movyMovies)
             if (movies.isEmpty()) results.addView(text("Movies are loading or unavailable.", 17f, Color.LTGRAY))
             else {
                 addRail("Movies For You", movies.take(45))
@@ -321,6 +381,7 @@ class MainActivity : Activity() {
             }
         }
         if (filter != "movies") {
+            if (movyShows.isNotEmpty()) addRail("TV Shows on Movy", movyShows)
             if (shows.isEmpty()) results.addView(text("TV shows are loading or unavailable.", 17f, Color.LTGRAY))
             else {
                 addRail("TV Series", shows.take(40))
@@ -407,7 +468,7 @@ class MainActivity : Activity() {
             overlay.addView(action("Browse seasons & episodes") { showEpisodes(title) })
         }
         overlay.addView(action(if (isFavorite(title)) "✓ Remove from My List" else "+ My List") { toggleFavorite(title) })
-        overlay.addView(action("Browse playback on Movy") { hideDetail(); openWebsite(if (title.type == "Movie") "https://www.movy.sx/browse/movie" else "https://www.movy.sx/browse/tv") })
+        overlay.addView(action(if (title.pageUrl.isNotBlank()) "Open title on Movy" else "Browse playback on Movy") { hideDetail(); openWebsite(title.pageUrl.ifBlank { if (title.type == "Movie") "https://www.movy.sx/browse/movie" else "https://www.movy.sx/browse/tv" }) })
         overlay.addView(action("Back to catalog") { hideDetail() })
         detail = overlay
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
