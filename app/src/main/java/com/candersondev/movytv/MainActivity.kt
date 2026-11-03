@@ -70,6 +70,19 @@ class MainActivity : Activity() {
                     request.url.scheme != "https"
                 override fun onPageFinished(view: WebView, url: String) {
                     spinner.visibility = View.GONE
+                    if (url.startsWith("https://www.movy.sx/") || url.startsWith("https://movy.sx/")) {
+                        view.evaluateJavascript("""(function(){
+                          if(!document.getElementById('ca-tv-focus')){
+                            var s=document.createElement('style');s.id='ca-tv-focus';
+                            s.textContent='a:focus,button:focus,input:focus,[tabindex]:focus,[role="button"]:focus{outline:5px solid #00e5c0 !important;outline-offset:3px !important;box-shadow:0 0 0 5px #000,0 0 24px #00e5c0 !important;z-index:999999 !important;position:relative !important}';
+                            document.head.appendChild(s);
+                          }
+                          if(document.activeElement===document.body){
+                            var first=document.querySelector('a[href],button,[tabindex="0"]');
+                            if(first)first.focus();
+                          }
+                        })();""", null)
+                    }
                 }
             }
             webChromeClient = object : WebChromeClient() {
@@ -163,6 +176,14 @@ class MainActivity : Activity() {
         isAllCaps = false
         textSize = 15f
         isFocusable = true
+        backgroundTintList = android.content.res.ColorStateList.valueOf(panel)
+        setTextColor(Color.WHITE)
+        setOnFocusChangeListener { _, focused ->
+            backgroundTintList = android.content.res.ColorStateList.valueOf(if (focused) accent else panel)
+            setTextColor(if (focused) Color.BLACK else Color.WHITE)
+            scaleX = if (focused) 1.04f else 1f
+            scaleY = if (focused) 1.04f else 1f
+        }
         setOnClickListener { click() }
     }
     private fun renderMessage(message: String) {
@@ -188,6 +209,13 @@ class MainActivity : Activity() {
             img?.optString("medium").orEmpty().replace("/medium/", "/original/"),
             if (rating > 0) String.format("%.1f", rating) else "—", "TVmaze", show.optInt("id"))
     }
+    private fun movieFromFeed(item: JSONObject): Title = Title(
+        item.optString("name", "Unknown"), "Movie",
+        item.optString("releaseDate").take(4),
+        item.optString("artistName", ""),
+        item.optString("artworkUrl100").replace("100x100bb", "600x600bb"),
+        "—", "Apple Charts")
+
     private fun movieFromJson(item: JSONObject): Title = Title(
         item.optString("trackName", item.optString("collectionName", "Unknown")),
         "Movie", item.optString("releaseDate").take(4),
@@ -209,7 +237,12 @@ class MainActivity : Activity() {
             }
         }
         worker.execute {
-            val data = listOf("action", "comedy", "drama", "thriller", "animation", "science fiction").flatMap { genre ->
+            val chart = try {
+                val feed = JSONObject(request("https://rss.applemarketingtools.com/api/v2/us/movies/top-movies/100/movies.json"))
+                    .getJSONObject("feed").getJSONArray("results")
+                (0 until feed.length()).map { movieFromFeed(feed.getJSONObject(it)) }
+            } catch (_: Exception) { emptyList() }
+            val data = chart + listOf("action", "comedy", "drama", "thriller", "animation", "science fiction").flatMap { genre ->
                 try {
                     val term = URLEncoder.encode(genre, "UTF-8")
                     val arr = JSONObject(request("https://itunes.apple.com/search?term=$term&media=movie&entity=movie&country=us&limit=45"))
@@ -218,7 +251,7 @@ class MainActivity : Activity() {
                 } catch (_: Exception) { emptyList() }
             }.distinctBy { it.name.lowercase() + it.year }
             runOnUiThread {
-                movies.clear(); movies.addAll(data)
+                movies.clear(); movies.addAll(data.distinctBy { it.name.lowercase() + it.year })
                 renderHome(activeSection)
             }
         }
