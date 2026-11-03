@@ -630,6 +630,7 @@ class MainActivity : Activity() {
         spinner.bringToFront()
         spinner.visibility = View.VISIBLE
         if (browser.url != url) browser.loadUrl(url)
+        else if (pendingEpisode != null) browser.reload()
         else spinner.visibility = View.GONE
         browser.requestFocus()
     }
