@@ -60,6 +60,8 @@ class MainActivity : Activity() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
+            settings.setSupportMultipleWindows(false)
+            settings.javaScriptCanOpenWindowsAutomatically = false
             settings.allowFileAccess = false
             settings.allowContentAccess = false
             settings.javaScriptCanOpenWindowsAutomatically = false
@@ -103,7 +105,7 @@ class MainActivity : Activity() {
         header.addView(text("  TV", 34f, accent, true))
         header.addView(Space(this), LinearLayout.LayoutParams(0, 1, 1f))
         header.addView(action("Play video URL") { promptVideoUrl() })
-        header.addView(action("Open website") { openWebsite() })
+        header.addView(action("Movy Home") { openWebsite("https://www.movy.sx/") })
         catalog.addView(header)
         catalog.addView(text("Discover movies and television", 18f, Color.LTGRAY).apply {
             setPadding(0, dp(8), 0, dp(22))
@@ -126,6 +128,8 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(14), 0, dp(14))
         }
+        quick.addView(action("Movy Movies") { openWebsite("https://www.movy.sx/browse/movie") })
+        quick.addView(action("Movy TV") { openWebsite("https://www.movy.sx/browse/tv") })
         quick.addView(action("Search") { performSearch(search.text.toString().trim()) })
         quick.addView(action("TV Shows") { renderHome("shows") })
         quick.addView(action("Movies") { renderHome("movies") })
@@ -138,7 +142,7 @@ class MainActivity : Activity() {
         spinner = ProgressBar(this).apply { visibility = View.GONE }
         root.addView(spinner, FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER))
         setContentView(root)
-        quick.getChildAt(3).requestFocus()
+        quick.getChildAt(0).requestFocus()
         renderMessage("Loading movie and TV catalogs…")
         loadHome()
     }
@@ -333,7 +337,7 @@ class MainActivity : Activity() {
             overlay.addView(action("Browse seasons & episodes") { showEpisodes(title) })
         }
         overlay.addView(action("Play authorized video URL") { promptVideoUrl() })
-        overlay.addView(action("Browse on Movy website") { hideDetail(); openWebsite() })
+        overlay.addView(action("Find on Movy") { hideDetail(); openWebsite(if (title.type == "Movie") "https://www.movy.sx/browse/movie" else "https://www.movy.sx/browse/tv") })
         overlay.addView(action("Back to catalog") { hideDetail() })
         detail = overlay
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
@@ -382,7 +386,7 @@ class MainActivity : Activity() {
                                     .setMessage((summary.ifBlank { "No episode description available." }) +
                                         "\\n\\nEpisode metadata does not include a playable video URL.")
                                     .setPositiveButton("OK", null)
-                                    .setNeutralButton("Open Movy website") { _, _ -> openWebsite() }
+                                    .setNeutralButton("Browse Movy TV") { _, _ -> openWebsite("https://www.movy.sx/browse/tv") }
                                     .show()
                             }.apply {
                                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
@@ -400,14 +404,14 @@ class MainActivity : Activity() {
         detail = null
         selected = null
     }
-    private fun openWebsite() {
+    private fun openWebsite(url: String = "https://www.movy.sx/") {
         hideDetail()
         browsing = true
         browser.visibility = View.VISIBLE
         browser.bringToFront()
         spinner.bringToFront()
         spinner.visibility = View.VISIBLE
-        if (browser.url == null) browser.loadUrl("https://movy.sx/")
+        if (browser.url != url) browser.loadUrl(url)
         else spinner.visibility = View.GONE
         browser.requestFocus()
     }
