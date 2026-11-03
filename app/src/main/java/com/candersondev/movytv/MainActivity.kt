@@ -25,7 +25,7 @@ import java.util.concurrent.Executors
 /** Native Android TV discovery UI; external catalogs supply metadata, not playback streams. */
 class MainActivity : Activity() {
     data class Title(val name: String, val type: String, val year: String, val description: String,
-                     val image: String, val rating: String, val source: String)
+                     val image: String, val rating: String, val source: String, val id: Int = 0)
     private val bg = Color.rgb(10, 14, 26)
     private val panel = Color.rgb(25, 33, 52)
     private val accent = Color.rgb(0, 202, 178)
@@ -43,6 +43,8 @@ class MainActivity : Activity() {
     private var playerOverlay: View? = null
     private var nativeVideo: VideoView? = null
     private var selected: Title? = null
+    private var activeSection = "all"
+    private var requestGeneration = 0
     private val shows = mutableListOf<Title>()
     private val movies = mutableListOf<Title>()
 
@@ -87,6 +89,7 @@ class MainActivity : Activity() {
             }
         }
         val scroll = ScrollView(this).apply {
+            descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
             isFillViewport = true
             clipToPadding = false
         }
@@ -135,7 +138,7 @@ class MainActivity : Activity() {
         spinner = ProgressBar(this).apply { visibility = View.GONE }
         root.addView(spinner, FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER))
         setContentView(root)
-        search.requestFocus()
+        quick.getChildAt(3).requestFocus()
         renderMessage("Loading movie and TV catalogs…")
         loadHome()
     }
@@ -179,7 +182,7 @@ class MainActivity : Activity() {
         return Title(show.optString("name", "Unknown"), "TV Show",
             show.optString("premiered").take(4), clean(show.optString("summary")),
             img?.optString("medium").orEmpty().replace("/medium/", "/original/"),
-            if (rating > 0) String.format("%.1f", rating) else "—", "TVmaze")
+            if (rating > 0) String.format("%.1f", rating) else "—", "TVmaze", show.optInt("id"))
     }
     private fun movieFromJson(item: JSONObject): Title = Title(
         item.optString("trackName", item.optString("collectionName", "Unknown")),
@@ -198,18 +201,21 @@ class MainActivity : Activity() {
             } catch (_: Exception) { emptyList() }
             runOnUiThread {
                 shows.clear(); shows.addAll(data)
-                renderHome("all")
+                renderHome(activeSection)
             }
         }
         worker.execute {
-            val data = try {
-                val arr = JSONObject(request("https://itunes.apple.com/search?term=movie&entity=movie&limit=70"))
-                    .getJSONArray("results")
-                (0 until arr.length()).map { movieFromJson(arr.getJSONObject(it)) }
-            } catch (_: Exception) { emptyList() }
+            val data = listOf("action", "comedy", "drama", "thriller", "animation", "science fiction").flatMap { genre ->
+                try {
+                    val term = URLEncoder.encode(genre, "UTF-8")
+                    val arr = JSONObject(request("https://itunes.apple.com/search?term=$term&media=movie&entity=movie&country=us&limit=45"))
+                        .getJSONArray("results")
+                    (0 until arr.length()).map { movieFromJson(arr.getJSONObject(it)) }
+                } catch (_: Exception) { emptyList() }
+            }.distinctBy { it.name.lowercase() + it.year }
             runOnUiThread {
                 movies.clear(); movies.addAll(data)
-                renderHome("all")
+                renderHome(activeSection)
             }
         }
     }
@@ -223,7 +229,7 @@ class MainActivity : Activity() {
                 (0 until arr.length()).map { tvFromJson(arr.getJSONObject(it)) }
             } catch (_: Exception) { emptyList() }
             val film = try {
-                val arr = JSONObject(request("https://itunes.apple.com/search?term=$encoded&entity=movie&limit=50"))
+                val arr = JSONObject(request("https://itunes.apple.com/search?term=$encoded&media=movie&entity=movie&country=us&limit=50"))
                     .getJSONArray("results")
                 (0 until arr.length()).map { movieFromJson(arr.getJSONObject(it)) }
             } catch (_: Exception) { emptyList() }
@@ -238,6 +244,7 @@ class MainActivity : Activity() {
         }
     }
     private fun renderHome(filter: String) {
+        activeSection = filter
         results.removeAllViews()
         if (filter != "shows") {
             if (movies.isEmpty()) results.addView(text("Movies are loading or unavailable.", 17f, Color.LTGRAY))
@@ -260,7 +267,8 @@ class MainActivity : Activity() {
                 background = rounded(panel, 12)
                 setPadding(dp(7), dp(7), dp(7), dp(10))
                 setOnClickListener { showDetail(title) }
-                setOnFocusChangeListener { _, focused ->
+                setOnFocusChangeListener { view, focused ->
+                    if (focused) view.post { view.requestRectangleOnScreen(android.graphics.Rect(0, 0, view.width, view.height), false) }
                     alpha = if (focused) 1f else 0.84f
                     scaleX = if (focused) 1.06f else 1f
                     scaleY = if (focused) 1.06f else 1f
@@ -285,6 +293,7 @@ class MainActivity : Activity() {
         }
         val horizontal = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
+            descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
             clipToPadding = false
         }
         horizontal.addView(row)
@@ -320,6 +329,9 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(24))
         })
         overlay.addView(text("Metadata: ${title.source}. Availability and playback are not provided by this catalog.", 15f, Color.LTGRAY))
+        if (title.type == "TV Show" && title.id > 0) {
+            overlay.addView(action("Browse seasons & episodes") { showEpisodes(title) })
+        }
         overlay.addView(action("Play authorized video URL") { promptVideoUrl() })
         overlay.addView(action("Browse on Movy website") { hideDetail(); openWebsite() })
         overlay.addView(action("Back to catalog") { hideDetail() })
@@ -327,6 +339,62 @@ class MainActivity : Activity() {
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
         overlay.getChildAt(4).requestFocus()
     }
+    private fun showEpisodes(title: Title) {
+        hideDetail()
+        val scroll = ScrollView(this).apply { isFillViewport = true }
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(65), dp(30), dp(65), dp(40))
+            setBackgroundColor(bg)
+        }
+        scroll.addView(column)
+        column.addView(text(title.name + " — Episodes", 30f, Color.WHITE, true))
+        val back = action("Back to show") { hideDetail(); showDetail(title) }
+        column.addView(back)
+        val status = text("Loading seasons and episodes…", 19f, Color.LTGRAY)
+        column.addView(status)
+        detail = scroll
+        root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        back.requestFocus()
+        worker.execute {
+            val episodes = try {
+                val arr = JSONArray(request("https://api.tvmaze.com/shows/${title.id}/episodes?specials=1"))
+                (0 until arr.length()).map { arr.getJSONObject(it) }
+            } catch (_: Exception) { emptyList() }
+            runOnUiThread {
+                if (detail !== scroll) return@runOnUiThread
+                column.removeView(status)
+                if (episodes.isEmpty()) {
+                    column.addView(text("Episode information unavailable. Please try again later.", 18f, Color.LTGRAY))
+                } else {
+                    episodes.groupBy { it.optInt("season") }.toSortedMap().forEach { (season, items) ->
+                        column.addView(text("Season $season", 25f, accent, true).apply {
+                            setPadding(0, dp(18), 0, dp(8))
+                        })
+                        items.forEach { episode ->
+                            val number = episode.optInt("number")
+                            val name = episode.optString("name", "Episode")
+                            val label = if (number > 0) "E$number — $name" else "Special — $name"
+                            column.addView(action(label) {
+                                val summary = clean(episode.optString("summary"))
+                                AlertDialog.Builder(this)
+                                    .setTitle("Season $season · $label")
+                                    .setMessage((summary.ifBlank { "No episode description available." }) +
+                                        "\\n\\nEpisode metadata does not include a playable video URL.")
+                                    .setPositiveButton("OK", null)
+                                    .setNeutralButton("Open Movy website") { _, _ -> openWebsite() }
+                                    .show()
+                            }.apply {
+                                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                                maxLines = 2
+                            }, LinearLayout.LayoutParams(-1, dp(64)))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun hideDetail() {
         detail?.let { root.removeView(it) }
         detail = null
