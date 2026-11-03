@@ -63,22 +63,26 @@ class MainActivity : Activity() {
         var index = 0
         val loader = WebView(this)
         movyCatalogLoader = loader
+        // Android WebView must be attached to a window to reliably render JS-driven listings.
+        loader.alpha = 0f
+        loader.isFocusable = false
+        root.addView(loader, FrameLayout.LayoutParams(1, 1))
         loader.settings.javaScriptEnabled = true
         loader.settings.domStorageEnabled = true
         loader.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
                 request.url.host !in listOf("www.movy.sx", "movy.sx")
             override fun onPageFinished(view: WebView, url: String) {
-                if (url != pages.getOrNull(index)) return
+                if (url.substringBefore("?").trimEnd('/') != pages.getOrNull(index)) return
                 view.postDelayed({
                     if (movyCatalogLoader !== view) return@postDelayed
                     val script = """(function(){
                       return JSON.stringify(Array.from(document.querySelectorAll('a[href]')).map(function(a){
                         var href=a.href;
                         if(!/^https:\/\/(www\.)?movy\.sx\/(movie|tv|show)\/\d+/.test(href))return null;
-                        var img=a.querySelector('img');
-                        var label=(img&&img.alt)||a.getAttribute('aria-label')||a.innerText||'';
-                        var image=img&&(img.currentSrc||img.src)||'';
+                        var img=a.querySelector('img')||(a.parentElement&&a.parentElement.querySelector('img'));
+                        var label=(img&&img.alt)||a.getAttribute('aria-label')||a.innerText||a.getAttribute('title')||'';
+                        var image=img&&(img.currentSrc||img.src||img.getAttribute('data-src'))||'';
                         return {url:href,name:label.trim().slice(0,180),image:image,caption:(a.innerText||'').trim().slice(0,200)};
                       }).filter(Boolean));
                     })();"""
@@ -103,12 +107,12 @@ class MainActivity : Activity() {
                             destination.addAll(list.distinctBy { it.pageUrl })
                             if (search.text.isNotBlank()) performSearch(search.text.toString())
                             else renderHome(activeSection)
-                        } catch (_: Exception) { }
+                        } catch (e: Exception) { android.util.Log.w("CAMovy", "Catalog parsing failed", e) }
                         index++
                         if (index < pages.size) view.loadUrl(pages[index])
-                        else { movyCatalogLoader = null; view.destroy() }
+                        else { movyCatalogLoader = null; root.removeView(view); view.destroy() }
                     }
-                }, 1400)
+                }, 3500)
             }
         }
         loader.loadUrl(pages[0])
