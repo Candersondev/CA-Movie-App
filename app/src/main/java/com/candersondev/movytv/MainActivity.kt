@@ -139,7 +139,7 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         when {
-            fullScreen != null -> browser.webChromeClient.onHideCustomView()
+            fullScreen != null -> browser.webChromeClient?.onHideCustomView()
             browsing && browser.canGoBack() -> browser.goBack()
             browsing -> showHome()
             else -> super.onBackPressed()
