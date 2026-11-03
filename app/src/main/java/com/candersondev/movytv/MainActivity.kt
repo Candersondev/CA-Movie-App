@@ -45,6 +45,14 @@ class MainActivity : Activity() {
     private var selected: Title? = null
     private var activeSection = "all"
     private var requestGeneration = 0
+    private val favorites by lazy { getSharedPreferences("ca_movie_tv", MODE_PRIVATE) }
+    private fun titleKey(title: Title) = title.type + "|" + title.name + "|" + title.year
+    private fun isFavorite(title: Title) = favorites.getBoolean(titleKey(title), false)
+    private fun toggleFavorite(title: Title) {
+        favorites.edit().putBoolean(titleKey(title), !isFavorite(title)).apply()
+        hideDetail()
+        showDetail(title)
+    }
     private val shows = mutableListOf<Title>()
     private val movies = mutableListOf<Title>()
 
@@ -118,7 +126,7 @@ class MainActivity : Activity() {
         header.addView(text("CA", 34f, accent, true))
         header.addView(text("  MOVIE TV", 30f, Color.WHITE, true))
         header.addView(Space(this), LinearLayout.LayoutParams(0, 1, 1f))
-        header.addView(action("Play video URL") { promptVideoUrl() })
+
         header.addView(action("Movy Home") { openWebsite("https://www.movy.sx/") })
         catalog.addView(header)
         catalog.addView(text("Your next movie night starts here", 18f, Color.LTGRAY).apply {
@@ -147,6 +155,7 @@ class MainActivity : Activity() {
         quick.addView(action("Search") { performSearch(search.text.toString().trim()) })
         quick.addView(action("TV Shows") { renderHome("shows") })
         quick.addView(action("Movies") { renderHome("movies") })
+        quick.addView(action("My List") { renderHome("favorites") })
         quick.addView(action("Home") { renderHome("all") })
         catalog.addView(quick)
         results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -284,13 +293,39 @@ class MainActivity : Activity() {
     private fun renderHome(filter: String) {
         activeSection = filter
         results.removeAllViews()
+        if (filter == "favorites") {
+            val saved = (movies + shows).filter { isFavorite(it) }
+            if (saved.isEmpty()) renderMessage("Your List is empty. Open a title and select + My List.")
+            else addRail("My List", saved)
+            return
+        }
+        val featured = (movies.firstOrNull() ?: shows.firstOrNull())
+        if (filter == "all" && featured != null) {
+            val hero = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(28), dp(26), dp(28), dp(26))
+                background = rounded(panel, 16)
+            }
+            hero.addView(text("FEATURED TONIGHT", 14f, accent, true))
+            hero.addView(text(featured.name, 36f, Color.WHITE, true))
+            hero.addView(text(featured.description.take(230).ifBlank { featured.type + " · " + featured.year },
+                17f, Color.LTGRAY).apply { setPadding(0, dp(10), 0, dp(14)); maxLines = 3 })
+            hero.addView(action("View Details") { showDetail(featured) })
+            results.addView(hero)
+        }
         if (filter != "shows") {
             if (movies.isEmpty()) results.addView(text("Movies are loading or unavailable.", 17f, Color.LTGRAY))
-            else addRail("Movies", movies)
+            else {
+                addRail("Movies For You", movies.take(45))
+                if (movies.size > 45) addRail("More Movies", movies.drop(45).take(45))
+            }
         }
         if (filter != "movies") {
             if (shows.isEmpty()) results.addView(text("TV shows are loading or unavailable.", 17f, Color.LTGRAY))
-            else addRail("TV Shows", shows.take(40))
+            else {
+                addRail("TV Series", shows.take(40))
+                if (shows.size > 40) addRail("More Series", shows.drop(40).take(40))
+            }
         }
     }
     private fun addRail(heading: String, titles: List<Title>) {
@@ -371,8 +406,8 @@ class MainActivity : Activity() {
         if (title.type == "TV Show" && title.id > 0) {
             overlay.addView(action("Browse seasons & episodes") { showEpisodes(title) })
         }
-        overlay.addView(action("Play authorized video URL") { promptVideoUrl() })
-        overlay.addView(action("Find on Movy") { hideDetail(); openWebsite(if (title.type == "Movie") "https://www.movy.sx/browse/movie" else "https://www.movy.sx/browse/tv") })
+        overlay.addView(action(if (isFavorite(title)) "✓ Remove from My List" else "+ My List") { toggleFavorite(title) })
+        overlay.addView(action("Browse playback on Movy") { hideDetail(); openWebsite(if (title.type == "Movie") "https://www.movy.sx/browse/movie" else "https://www.movy.sx/browse/tv") })
         overlay.addView(action("Back to catalog") { hideDetail() })
         detail = overlay
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
