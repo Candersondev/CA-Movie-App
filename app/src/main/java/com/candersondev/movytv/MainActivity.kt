@@ -59,7 +59,7 @@ class MainActivity : Activity() {
     private val movyShows = mutableListOf<Title>()
     private var movyCatalogLoader: WebView? = null
     private fun loadMovyCatalog() {
-        val pages = listOf("https://www.movy.sx/browse/movie", "https://www.movy.sx/browse/tv")
+        val pages = listOf("https://www.movy.sx/browse/movie", "https://www.movy.sx/browse/tv", "https://www.movy.sx/")
         var index = 0
         val loader = WebView(this)
         movyCatalogLoader = loader
@@ -73,7 +73,7 @@ class MainActivity : Activity() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
                 request.url.host !in listOf("www.movy.sx", "movy.sx")
             override fun onPageFinished(view: WebView, url: String) {
-                if (url.substringBefore("?").trimEnd('/') != pages.getOrNull(index)) return
+                if (url.substringBefore("?").trimEnd('/') != pages.getOrNull(index)?.trimEnd('/')) return
                 view.postDelayed({
                     if (movyCatalogLoader !== view) return@postDelayed
                     val script = """(function(){
@@ -103,8 +103,11 @@ class MainActivity : Activity() {
                                     year, "", obj.optString("image"), "—", "Movy", 0, link))
                             }
                             val destination = if (index == 0) movyMovies else movyShows
-                            destination.clear()
-                            destination.addAll(list.distinctBy { it.pageUrl })
+                            val filtered = if (index == 2) list.filter { it.pageUrl.contains("/tv/") } else list
+                            if (index != 2 || movyShows.isEmpty()) {
+                                destination.clear()
+                                destination.addAll(filtered.distinctBy { it.pageUrl })
+                            }
                             if (search.text.isNotBlank()) performSearch(search.text.toString())
                             else renderHome(activeSection)
                         } catch (e: Exception) { android.util.Log.w("CAMovy", "Catalog parsing failed", e) }
@@ -586,8 +589,14 @@ class MainActivity : Activity() {
                                         "\\n\\nEpisode metadata does not include a playable video URL.")
                                     .setPositiveButton("OK", null)
                                     .setNeutralButton(if (title.pageUrl.isNotBlank()) "Find episode on Movy" else "Browse Movy TV") { _, _ ->
-                                        if (title.pageUrl.isNotBlank() && number > 0) pendingEpisode = season to number
-                                        openWebsite(title.pageUrl.ifBlank { "https://www.movy.sx/browse/tv" })
+                                        val base = title.pageUrl.trimEnd('/')
+                                        if (base.matches(Regex("""https://(?:www\\.)?movy\\.sx/tv/\\d+""")) && season > 0 && number > 0) {
+                                            pendingEpisode = null
+                                            openWebsite("$base/$season/$number?play=true")
+                                        } else {
+                                            if (title.pageUrl.isNotBlank() && number > 0) pendingEpisode = season to number
+                                            openWebsite(title.pageUrl.ifBlank { "https://www.movy.sx/browse/tv" })
+                                        }
                                     }
                                     .show()
                             }.apply {
