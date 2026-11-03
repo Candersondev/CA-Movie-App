@@ -483,7 +483,7 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(24))
         })
         overlay.addView(text("Metadata: ${title.source}. Availability and playback are not provided by this catalog.", 15f, Color.LTGRAY))
-        if (title.type == "TV Show" && title.id > 0) {
+        if (title.type == "TV Show") {
             overlay.addView(action("Browse seasons & episodes") { showEpisodes(title) })
         }
         overlay.addView(action(if (isFavorite(title)) "✓ Remove from My List" else "+ My List") { toggleFavorite(title) })
@@ -503,6 +503,8 @@ class MainActivity : Activity() {
         }
         scroll.addView(column)
         column.addView(text(title.name + " — Episodes", 30f, Color.WHITE, true))
+        column.addView(text("Episode guide: TVmaze metadata. Selecting an episode does not automatically cue that episode on Movy.", 15f, Color.LTGRAY))
+        if (title.pageUrl.isNotBlank()) column.addView(action("Open this show on Movy") { openWebsite(title.pageUrl) })
         val back = action("Back to show") { hideDetail(); showDetail(title) }
         column.addView(back)
         val status = text("Loading seasons and episodes…", 19f, Color.LTGRAY)
@@ -511,15 +513,24 @@ class MainActivity : Activity() {
         root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
         back.requestFocus()
         worker.execute {
+            val showId = if (title.id > 0) title.id else try {
+                val encoded = URLEncoder.encode(title.name, "UTF-8")
+                val matches = JSONArray(request("https://api.tvmaze.com/search/shows?q=$encoded"))
+                val match = (0 until matches.length()).map { matches.getJSONObject(it).getJSONObject("show") }
+                    .firstOrNull { it.optString("name").trim().equals(title.name.trim(), ignoreCase = true) }
+                match?.optInt("id", 0) ?: 0
+            } catch (_: Exception) { 0 }
             val episodes = try {
-                val arr = JSONArray(request("https://api.tvmaze.com/shows/${title.id}/episodes?specials=1"))
+                if (showId <= 0) throw IllegalStateException("No matching episode metadata")
+                val arr = JSONArray(request("https://api.tvmaze.com/shows/$showId/episodes?specials=1"))
                 (0 until arr.length()).map { arr.getJSONObject(it) }
             } catch (_: Exception) { emptyList() }
             runOnUiThread {
                 if (detail !== scroll) return@runOnUiThread
                 column.removeView(status)
                 if (episodes.isEmpty()) {
-                    column.addView(text("Episode information unavailable. Please try again later.", 18f, Color.LTGRAY))
+                    column.addView(text("No matching episode guide found. You can still open the show on Movy.", 18f, Color.LTGRAY))
+                    if (title.pageUrl.isNotBlank()) column.addView(action("Open show on Movy") { openWebsite(title.pageUrl) })
                 } else {
                     episodes.groupBy { it.optInt("season") }.toSortedMap().forEach { (season, items) ->
                         column.addView(text("Season $season", 25f, accent, true).apply {
@@ -536,7 +547,9 @@ class MainActivity : Activity() {
                                     .setMessage((summary.ifBlank { "No episode description available." }) +
                                         "\\n\\nEpisode metadata does not include a playable video URL.")
                                     .setPositiveButton("OK", null)
-                                    .setNeutralButton("Browse Movy TV") { _, _ -> openWebsite("https://www.movy.sx/browse/tv") }
+                                    .setNeutralButton(if (title.pageUrl.isNotBlank()) "Open show on Movy" else "Browse Movy TV") { _, _ ->
+                                        openWebsite(title.pageUrl.ifBlank { "https://www.movy.sx/browse/tv" })
+                                    }
                                     .show()
                             }.apply {
                                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
