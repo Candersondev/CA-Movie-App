@@ -90,6 +90,7 @@ class MainActivity : Activity() {
                     if (fullScreen != null) { callback.onCustomViewHidden(); return }
                     fullScreen = view
                     fullScreenCallback = callback
+                    browser.evaluateJavascript("document.getElementById('ca-tv-selection-box')?.remove();", null)
                     browser.visibility = View.GONE
                     root.addView(view, FrameLayout.LayoutParams(-1, -1))
                 }
@@ -514,6 +515,16 @@ class MainActivity : Activity() {
     private fun browserNavigationScript(direction: String): String = """
         (function(){
           var dir='$direction', win=window;
+          var playing=Array.from(document.querySelectorAll('video')).some(function(v){
+            var r=v.getBoundingClientRect();
+            return !v.paused && r.width>200 && r.height>100;
+          });
+          if(playing){
+            var existing=document.getElementById('ca-tv-selection-box');
+            if(existing)existing.style.display='none';
+            win.__caTvSelected=null;
+            return;
+          }
           var selector='a[href],button,input,select,textarea,[role="button"],[role="link"],[tabindex]:not([tabindex="-1"]),video,[onclick],article,[class*="poster"],[class*="Poster"],[class*="card"],[class*="Card"]';
           var nodes=Array.from(document.querySelectorAll(selector)).filter(function(e){
             var r=e.getBoundingClientRect(),s=getComputedStyle(e);
@@ -526,6 +537,10 @@ class MainActivity : Activity() {
             return true;
           });
           if(!nodes.length)return;
+          if(dir==='click'){
+            var oldBox=document.getElementById('ca-tv-selection-box');
+            if(oldBox)oldBox.style.display='none';
+          }
           var old=win.__caTvSelected;
           var active=nodes.indexOf(old)>=0?old:document.activeElement;
           var marker=document.getElementById('ca-tv-selection-box');
