@@ -26,9 +26,9 @@ import java.util.concurrent.Executors
 class MainActivity : Activity() {
     data class Title(val name: String, val type: String, val year: String, val description: String,
                      val image: String, val rating: String, val source: String, val id: Int = 0)
-    private val bg = Color.rgb(10, 14, 26)
-    private val panel = Color.rgb(25, 33, 52)
-    private val accent = Color.rgb(0, 202, 178)
+    private val bg = Color.rgb(12, 12, 14)
+    private val panel = Color.rgb(31, 31, 35)
+    private val accent = Color.rgb(229, 9, 20)
     private val worker = Executors.newFixedThreadPool(4)
     private lateinit var root: FrameLayout
     private lateinit var catalog: LinearLayout
@@ -114,13 +114,13 @@ class MainActivity : Activity() {
         }
         scroll.addView(catalog)
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        header.addView(text("MOVY", 34f, Color.WHITE, true))
-        header.addView(text("  TV", 34f, accent, true))
+        header.addView(text("CA", 34f, accent, true))
+        header.addView(text("  MOVIE TV", 30f, Color.WHITE, true))
         header.addView(Space(this), LinearLayout.LayoutParams(0, 1, 1f))
         header.addView(action("Play video URL") { promptVideoUrl() })
         header.addView(action("Movy Home") { openWebsite("https://www.movy.sx/") })
         catalog.addView(header)
-        catalog.addView(text("Discover movies and television", 18f, Color.LTGRAY).apply {
+        catalog.addView(text("Your next movie night starts here", 18f, Color.LTGRAY).apply {
             setPadding(0, dp(8), 0, dp(22))
         })
         search = EditText(this).apply {
@@ -306,7 +306,8 @@ class MainActivity : Activity() {
                 setOnClickListener { showDetail(title) }
                 setOnFocusChangeListener { view, focused ->
                     if (focused) view.post { view.requestRectangleOnScreen(android.graphics.Rect(0, 0, view.width, view.height), false) }
-                    alpha = if (focused) 1f else 0.84f
+                    background = rounded(if (focused) accent else panel, 12)
+                    alpha = if (focused) 1f else 0.9f
                     scaleX = if (focused) 1.06f else 1f
                     scaleY = if (focused) 1.06f else 1f
                     elevation = if (focused) dp(14).toFloat() else 0f
@@ -510,7 +511,56 @@ class MainActivity : Activity() {
         playerOverlay = null
     }
 
+    private fun browserNavigationScript(direction: String): String = """
+        (function(){
+          var dir='$direction';
+          var selector='a[href],button,input,select,textarea,[role="button"],[tabindex]:not([tabindex="-1"]),video';
+          var nodes=Array.from(document.querySelectorAll(selector)).filter(function(e){
+            var r=e.getBoundingClientRect(),s=getComputedStyle(e);
+            return r.width>3&&r.height>3&&s.visibility!=='hidden'&&s.display!=='none'&&!e.disabled;
+          });
+          if(!nodes.length)return;
+          var active=document.activeElement;
+          if(dir==='click'){
+            if(active&&active!==document.body){
+              if(active.tagName==='VIDEO'){if(active.paused)active.play();else active.pause();}
+              else active.click();
+            }else{nodes[0].focus();nodes[0].scrollIntoView({block:'center',inline:'center'});}
+            return;
+          }
+          var current=nodes.indexOf(active);
+          if(current<0){nodes[0].focus();nodes[0].scrollIntoView({block:'center',inline:'center'});return;}
+          var a=active.getBoundingClientRect(),ax=a.left+a.width/2,ay=a.top+a.height/2;
+          var best=null,score=Infinity;
+          nodes.forEach(function(el){
+            if(el===active)return;
+            var r=el.getBoundingClientRect(),x=r.left+r.width/2-ax,y=r.top+r.height/2-ay;
+            var forward=dir==='left'?-x:dir==='right'?x:dir==='up'?-y:y;
+            if(forward<=3)return;
+            var lateral=(dir==='left'||dir==='right')?Math.abs(y):Math.abs(x);
+            var cost=forward+lateral*2.8;
+            if(cost<score){score=cost;best=el;}
+          });
+          if(best){best.focus();best.scrollIntoView({block:'center',inline:'center'});}
+          else{window.scrollBy(0,dir==='down'?280:dir==='up'?-280:0);}
+        })();
+    """.trimIndent()
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (browsing && fullScreen == null && playerOverlay == null && event.action == KeyEvent.ACTION_DOWN) {
+            val direction = when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> "left"
+                KeyEvent.KEYCODE_DPAD_RIGHT -> "right"
+                KeyEvent.KEYCODE_DPAD_UP -> "up"
+                KeyEvent.KEYCODE_DPAD_DOWN -> "down"
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> "click"
+                else -> null
+            }
+            if (direction != null) {
+                browser.evaluateJavascript(browserNavigationScript(direction), null)
+                return true
+            }
+        }
         if (playerOverlay != null && event.action == KeyEvent.ACTION_DOWN) {
             val video = nativeVideo
             when (event.keyCode) {
