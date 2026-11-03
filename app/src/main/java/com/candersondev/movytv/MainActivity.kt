@@ -99,14 +99,25 @@ class MainActivity : Activity() {
                                 val year = Regex("""\b(?:19|20)\d{2}\b""").find(caption)?.value.orEmpty()
                                 val name = label.replace(Regex("""\s+(?:[0-9]\.[0-9]|(?:19|20)\d{2}).*"""), "").trim()
                                 if (name.isBlank() || !link.startsWith("https://www.movy.sx/") && !link.startsWith("https://movy.sx/")) continue
-                                list.add(Title(name, if (index == 0) "Movie" else "TV Show",
+                                val path = android.net.Uri.parse(link).path.orEmpty()
+                                // Only catalog actual title pages, not season/episode deep links.
+                                val moviePage = Regex("""^/movie/\\d+/?$""").matches(path)
+                                val showPage = Regex("""^/(?:tv|show)/\\d+/?$""").matches(path)
+                                if (!moviePage && !showPage) continue
+                                if (index == 0 && !moviePage) continue
+                                if (index == 1 && !showPage) continue
+                                list.add(Title(name, if (moviePage) "Movie" else "TV Show",
                                     year, "", obj.optString("image"), "—", "Movy", 0, link))
                             }
-                            val destination = if (index == 0) movyMovies else movyShows
-                            val filtered = if (index == 2) list.filter { it.pageUrl.contains("/tv/") } else list
-                            if (index != 2 || movyShows.isEmpty()) {
-                                destination.clear()
-                                destination.addAll(filtered.distinctBy { it.pageUrl })
+                            val movieItems = list.filter { it.type == "Movie" }.distinctBy { it.pageUrl }
+                            val showItems = list.filter { it.type == "TV Show" }.distinctBy { it.pageUrl }
+                            if (index == 0 || (index == 2 && movyMovies.isEmpty())) {
+                                movyMovies.clear()
+                                movyMovies.addAll(movieItems)
+                            }
+                            if (index == 1 || (index == 2 && movyShows.isEmpty())) {
+                                movyShows.clear()
+                                movyShows.addAll(showItems)
                             }
                             if (search.text.isNotBlank()) performSearch(search.text.toString())
                             else renderHome(activeSection)
@@ -589,14 +600,10 @@ class MainActivity : Activity() {
                                         "\\n\\nEpisode metadata does not include a playable video URL.")
                                     .setPositiveButton("OK", null)
                                     .setNeutralButton(if (title.pageUrl.isNotBlank()) "Find episode on Movy" else "Browse Movy TV") { _, _ ->
-                                        val base = title.pageUrl.trimEnd('/')
-                                        if (base.matches(Regex("""https://(?:www\\.)?movy\\.sx/tv/\\d+""")) && season > 0 && number > 0) {
-                                            pendingEpisode = null
-                                            openWebsite("$base/$season/$number?play=true")
-                                        } else {
-                                            if (title.pageUrl.isNotBlank() && number > 0) pendingEpisode = season to number
-                                            openWebsite(title.pageUrl.ifBlank { "https://www.movy.sx/browse/tv" })
-                                        }
+                                        // Movy does not expose a verified episode URL pattern.
+                                        // Preserve the working show URL rather than inventing a path.
+                                        if (title.pageUrl.isNotBlank() && number > 0) pendingEpisode = season to number
+                                        openWebsite(title.pageUrl.ifBlank { "https://www.movy.sx/browse/tv" })
                                     }
                                     .show()
                             }.apply {
